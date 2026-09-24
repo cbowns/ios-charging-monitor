@@ -14,7 +14,7 @@ negotiates (for example MagSafe 15 W versus Qi 7.5 W) and what reaches the batte
 And it finds the sweet spot on a wireless charger with no magnets, like a car tray: slide the phone
 around with the live watts on screen until the number peaks.
 
-## What it shows (verified on iPhone 17 Pro Max, iOS 26)
+## What it shows (verified on iPhone 17 Pro Max / iOS 26 and iPhone 18 Pro Max / iOS 27)
 
 - Watts from the charger, 1 s updates, sparkline. USB-C input voltage × current. On MagSafe there
   is no input current sensor, so the headline is watts into the battery instead.
@@ -29,7 +29,7 @@ around with the live watts on screen until the number peaks.
 
 ## Not available on iPhone
 
-Tried and blocked by the sandbox on iOS 26; the simulator shows them because it reads the Mac:
+Tried and blocked by the sandbox on iOS 26 and 27; the simulator shows them because it reads the Mac:
 
 - Battery health, cycle count, mAh capacity, design capacity (IOKit registry filtered to two keys).
 - Optimized Battery Charging, charge limit, and Clean Energy Charging settings (PowerUI XPC denied).

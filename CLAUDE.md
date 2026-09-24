@@ -6,6 +6,7 @@ Personal dev-only iPhone app: live charge power in watts from private APIs. Not 
 
 - XcodeGen project: `xcodegen generate` after editing `project.yml` or adding files.
 - Scheme `ChargeSpeed`, bundle id `com.gregwilson.chargespeed`, team in `project.yml`.
+- Runs on iPhone 17 Pro Max (iOS 26) and iPhone 18 Pro Max (iOS 27) with the same sensor names. `batteryWattHours` is still the 17 Pro Max value.
 - Deploy: `/deploy-to-iphone`. Console-attached launch (phone unlocked):
   `xcrun devicectl device process launch --console --terminate-existing --device <UDID> com.gregwilson.chargespeed`
 - Simulator runs but IOKit calls hit the Mac, so it shows the Mac's battery.
@@ -21,7 +22,7 @@ Personal dev-only iPhone app: live charge power in watts from private APIs. Not 
 - `PowerMonitor.swift`: 1 s poll, %-rate fallback (`batteryWattHours` = 19.7 for 17 Pro Max), hold detection with 45 s debounce, peak of the headline watts per charging session (median of last 3 samples; resets at plug-in, survives full/top-off and relaunch via persisted session identity: adapter serial + last-seen plugged/percent; manual reset button).
 - `SmartCharge.m`: PowerUI client, blocked on iOS, kept for macOS/entitled builds. `Probes*.swift/.m`: DEBUG exploration only, not called.
 
-## Verified blocked on iOS 26 (don't retry)
+## Verified blocked on iOS 26 and 27 (don't retry)
 
 IOKit battery registry keys beyond `BatteryInstalled`/`ExternalConnected`; `IOReport`; `IOPMCopyBatteryInfo`;
 `IOPSCopyChargeStatus`, `IOPSCopyBatteryLevelLimits`, `IOPSCopyPowerSourcesInfoPrecise` (all kIOReturnNotPrivileged);
