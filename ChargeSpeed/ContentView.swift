@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showRateReport = false
     @State private var showProfiles = false
     @State private var showSeenProfiles = false
+    @State private var chartMetric: ChartMetric?
     @State private var showSensors = false
     @State private var showPowerd = false
     @State private var showAdapterRaw = false
@@ -49,6 +50,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showRecordings) {
                 RecordingsView(currentURL: monitor.recorder?.url)
+            }
+            .sheet(item: $chartMetric) { metric in
+                MetricChartView(monitor: monitor, metric: metric)
             }
             .sheet(isPresented: $showRateReport) {
                 SensorRateReportView(report: rateProbe.report ?? "")
@@ -267,8 +271,10 @@ struct ContentView: View {
     private func chargingSection(_ snap: PowerSnapshot) -> some View {
         if snap.batteryWatts != nil || snap.batteryVoltage != nil || snap.cycleCount != nil {
             Section("Charging") {
-                row("Into battery", snap.batteryWatts.map { watts($0, signed: true) })
-                row("Battery", zip(snap.batteryVoltage, snap.batteryCurrent).map { String(format: "%.3f V · %.3f A", $0, $1) })
+                chartRow("Into battery", snap.batteryWatts.map { watts($0, signed: true) }, metric: .batteryWatts)
+                // Tapping charts the voltage only; current is the watts chart divided by it.
+                chartRow("Battery", zip(snap.batteryVoltage, snap.batteryCurrent).map { String(format: "%.3f V · %.3f A", $0, $1) },
+                         metric: .batteryVoltage)
                 row("Power (average)", snap.averageBatteryWatts.map { watts($0, signed: true) })
                 row("Charge", zip(snap.rawCurrentCapacity_mAh, snap.rawMaxCapacity_mAh).map { "\($0) / \($1) mAh" })
                 row("Design capacity", snap.designCapacity_mAh.map { "\($0) mAh" })
@@ -484,6 +490,31 @@ struct ContentView: View {
                 .font(.callout)
                 .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
             }
+        }
+    }
+
+    /// A row that opens a chart of `metric` when tapped.
+    @ViewBuilder
+    private func chartRow(_ label: String, _ value: String?, metric: ChartMetric) -> some View {
+        if let value {
+            Button {
+                chartMetric = metric
+            } label: {
+                HStack {
+                    Text(label)
+                    Spacer()
+                    Text(value)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Image(systemName: "chart.xyaxis.line")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                }
+                .font(.callout)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
         }
     }
 

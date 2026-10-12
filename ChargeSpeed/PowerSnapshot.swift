@@ -123,7 +123,11 @@ struct PowerSnapshot {
     var wirelessKind: String { isMagSafe ? "MagSafe" : "wireless" }
 
     var sensorBatteryCurrent: Double? { sensor("Charger IQ0B") }
-    var sensorBatteryVoltage: Double? { profile.batteryVoltageSensors.lazy.compactMap(sensor).first }
+    var sensorBatteryVoltage: Double? { sensorBatteryVoltageReading?.value }
+    var sensorBatteryVoltageReading: HIDSensors.Reading? {
+        profile.batteryVoltageSensors.lazy.compactMap { name in self.sensors.first { $0.name == name } }.first
+    }
+    var sensorBatteryCurrentReading: HIDSensors.Reading? { sensors.first { $0.name == "Charger IQ0B" } }
     var sensorBatteryWatts: Double? {
         guard let i = sensorBatteryCurrent, let v = sensorBatteryVoltage else { return nil }
         return i * v
@@ -190,16 +194,32 @@ struct PowerSnapshot {
     var adapterManufacturer: String? { adapter?["Manufacturer"] as? String }
     var adapterModel: String? { adapter?["Model"].map { String(describing: $0) } }
     var adapterPowerTier: Int? { signedInt("AdapterPowerTier", in: adapter) }
-    var adapterActiveProfile: Int? { signedInt("UsbHvcHvcIndex", in: adapter) }
     var adapterIsWireless: Bool { bool("IsWireless", in: adapter) }
 
-    /// The PD profile currently in use, or the adapter's reported voltage/current.
+    /// The menu entry in use: the one matching the reported voltage, else `UsbHvcHvcIndex`.
+    /// The index can lag: it sat at 0 (5 V) for minutes while `AdapterVoltage` said 9 V and
+    /// the input measured 8.8 V (iPhone 14 Pro, iOS 27).
+    var adapterActiveProfile: Int? {
+        if let v = adapterVoltage_mV,
+           let match = adapterProfiles.first(where: { abs($0.voltage_mV - v) <= 300 }) {
+            return match.index
+        }
+        return signedInt("UsbHvcHvcIndex", in: adapter)
+    }
+
+    /// The live contract: reported voltage × current, which track the measured input. Falls
+    /// back to the active menu entry.
     var adapterNegotiated: (voltage_mV: Int, current_mA: Int)? {
+        if let v = adapterVoltage_mV, let c = adapterCurrent_mA, c > 0 { return (v, c) }
         if let active = adapterActiveProfile, let p = adapterProfiles.first(where: { $0.index == active }) {
             return (p.voltage_mV, p.current_mA)
         }
-        if let v = adapterVoltage_mV, let c = adapterCurrent_mA { return (v, c) }
         return nil
+    }
+
+    /// For one tick around unplug iOS reports an adapter with no description and 0 W / 0 A.
+    var adapterIsPlaceholder: Bool {
+        adapter != nil && signedInt("Watts", in: adapter) ?? 0 == 0 && (adapterCurrent_mA ?? 0) == 0
     }
 
     /// One-line adapter description for the hero card, e.g. "61W USB-C Power Adapter · 15.0 V × 3.00 A".
@@ -221,6 +241,7 @@ struct PowerSnapshot {
 
     /// `padded` keeps each field a fixed width so profiles stack into columns.
     func adapterProfileDescription(padded: Bool) -> String? {
+        guard !adapterIsPlaceholder else { return nil }
         if let n = adapterNegotiated {
             var text = Formatting.voltsAmps(voltage_mV: n.voltage_mV, current_mA: n.current_mA, padded: padded)
             if let w = adapterWatts { text += " · " + Formatting.watts(w, padded: padded) }
@@ -230,10 +251,13 @@ struct PowerSnapshot {
     }
 
     /// Adapter serial where available, otherwise a composite of the adapter's static fields.
+    /// iOS only sometimes includes `SerialString`, and then as "UNKNOWN", so that's ignored;
+    /// on iPhone the composite is usually just Description + FamilyCode (the charger type).
     var adapterIdentity: String? {
-        guard let a = adapter else { return nil }
-        if let serial = a["SerialString"] as? String, !serial.isEmpty { return serial }
-        return ["Name", "Description", "Model", "AdapterID"].compactMap { a[$0].map { String(describing: $0) } }.joined(separator: "|")
+        guard let a = adapter, !adapterIsPlaceholder else { return nil }
+        if let serial = a["SerialString"] as? String, !serial.isEmpty, serial != "UNKNOWN" { return serial }
+        return ["Name", "Description", "Manufacturer", "Model", "FamilyCode"]
+            .compactMap { a[$0].map { String(describing: $0) } }.joined(separator: "|")
     }
 
     /// USB PD / HVC power profiles the adapter advertised.

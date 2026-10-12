@@ -22,6 +22,8 @@ final class PowerMonitor: ObservableObject {
     /// Plug, profile, thermal and display changes, oldest first (last 500).
     @Published private(set) var events: [ChargeEvent] = []
     @Published private(set) var ambient: Ambient?
+    /// Battery watts and voltage per tick, for the tappable charts.
+    @Published private(set) var series = SeriesStore()
     /// Every profile the current adapter has reported since it was attached, oldest first.
     /// Wired PD chargers advertise their menu up front; MagSafe and Qi only reveal theirs as
     /// they step up, so this is the only way to see them.
@@ -260,6 +262,7 @@ final class PowerMonitor: ObservableObject {
         updateSession(snap)
         updatePeak(snap)
         updateSeenProfiles(snap)
+        series.append(snap)
 
         let new = detector.detect(snap, ambient)
         if !new.isEmpty {

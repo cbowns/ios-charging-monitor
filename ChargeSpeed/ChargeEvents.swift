@@ -57,6 +57,9 @@ struct EventDetector {
     private var profileText: String?
     private var status = ""
     private var plugChangedAt = Date.distantPast
+    /// A plug-in waits `settle` before it's logged: iOS first reports a generic "usb charger"
+    /// and switches to the real adapter a second or two later.
+    private var pendingPlugIn: Date?
     private var pendingStatus: (text: String, since: Date)?
     private var thermalState = 0
     private var tempBand = 0
@@ -87,11 +90,17 @@ struct EventDetector {
 
         // Plug and adapter. Adapter details can arrive a tick or two after the plug flips,
         // and can briefly vanish, so nil never replaces a known adapter or profile.
+        func emitPlugIn(at date: Date) {
+            let kind = snap.isWirelessInput ? (snap.isMagSafe ? "MagSafe" : "Wireless") : "Plugged in"
+            emit(.plugIn, [kind, snap.adapterName ?? snap.adapterDescription].compactMap { $0 }.joined(separator: " · "), at: date)
+            pendingPlugIn = nil
+        }
         if snap.externalConnected != pluggedIn {
             pluggedIn = snap.externalConnected
             if pluggedIn {
-                emit(.plugIn, snap.isWirelessInput ? (snap.isMagSafe ? "MagSafe" : "Wireless") : "Plugged in")
+                pendingPlugIn = now
             } else {
+                if let pending = pendingPlugIn { emitPlugIn(at: pending) }
                 emit(.unplug, "Unplugged")
                 adapterIdentity = nil
                 profile = nil
@@ -102,7 +111,13 @@ struct EventDetector {
         if pluggedIn {
             if let id = snap.adapterIdentity, id != adapterIdentity {
                 adapterIdentity = id
-                emit(.adapter, snap.adapterName ?? snap.adapterDescription ?? "Adapter")
+                // While the plug-in is settling, the adapter it ends on goes in that event.
+                if pendingPlugIn == nil {
+                    emit(.adapter, snap.adapterName ?? snap.adapterDescription ?? "Adapter")
+                }
+            }
+            if let pending = pendingPlugIn, now.timeIntervalSince(pending) >= Self.settle {
+                emitPlugIn(at: pending)
             }
             if let p = snap.adapterProfileDescription, p != profile,
                let text = snap.adapterProfileDescription(padded: true) {
