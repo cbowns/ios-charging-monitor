@@ -217,13 +217,16 @@ struct PowerSnapshot {
 
     /// What the adapter is currently offering, e.g. "15.0 V × 3.00 A · 45 W". MagSafe pucks
     /// report a wattage tier here that steps up as the puck and its upstream adapter negotiate.
-    var adapterProfileDescription: String? {
+    var adapterProfileDescription: String? { adapterProfileDescription(padded: false) }
+
+    /// `padded` keeps each field a fixed width so profiles stack into columns.
+    func adapterProfileDescription(padded: Bool) -> String? {
         if let n = adapterNegotiated {
-            var text = Formatting.voltsAmps(voltage_mV: n.voltage_mV, current_mA: n.current_mA)
-            if let w = adapterWatts { text += " · \(w) W" }
+            var text = Formatting.voltsAmps(voltage_mV: n.voltage_mV, current_mA: n.current_mA, padded: padded)
+            if let w = adapterWatts { text += " · " + Formatting.watts(w, padded: padded) }
             return text
         }
-        return adapterWatts.map { "\($0) W" }
+        return adapterWatts.map { Formatting.watts($0, padded: padded) }
     }
 
     /// Adapter serial where available, otherwise a composite of the adapter's static fields.

@@ -53,6 +53,8 @@ struct EventDetector {
     private var pluggedIn = false
     private var adapterIdentity: String?
     private var profile: String?
+    /// `profile` padded for display, so "from" and "to" stack into columns.
+    private var profileText: String?
     private var status = ""
     private var plugChangedAt = Date.distantPast
     private var pendingStatus: (text: String, since: Date)?
@@ -74,6 +76,7 @@ struct EventDetector {
             pluggedIn = snap.externalConnected
             adapterIdentity = snap.externalConnected ? snap.adapterIdentity : nil
             profile = snap.externalConnected ? snap.adapterProfileDescription : nil
+            profileText = snap.externalConnected ? snap.adapterProfileDescription(padded: true) : nil
             status = snap.statusText
             thermalState = ambient.thermalState
             tempBand = snap.batteryTemperatureC.map(Self.band) ?? 0
@@ -92,6 +95,7 @@ struct EventDetector {
                 emit(.unplug, "Unplugged")
                 adapterIdentity = nil
                 profile = nil
+                profileText = nil
             }
             plugChangedAt = now
         }
@@ -100,9 +104,12 @@ struct EventDetector {
                 adapterIdentity = id
                 emit(.adapter, snap.adapterName ?? snap.adapterDescription ?? "Adapter")
             }
-            if let p = snap.adapterProfileDescription, p != profile {
-                emit(.profile, profile.map { "\($0) → \(p)" } ?? p)
+            if let p = snap.adapterProfileDescription, p != profile,
+               let text = snap.adapterProfileDescription(padded: true) {
+                // Two lines, "from →" over "to", so successive changes read as columns.
+                emit(.profile, profileText.map { "\($0) →\n\(text)" } ?? text)
                 profile = p
+                profileText = text
             }
         }
 
