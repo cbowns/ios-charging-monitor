@@ -36,6 +36,13 @@ enum RecordingFormat {
     static func number(_ v: Double) -> String { ((v * 10_000).rounded() / 10_000).description }
     static func time(_ d: Date) -> String { ((d.timeIntervalSince1970 * 1000).rounded() / 1000).description }
 
+    /// e.g. "iPhone18,2".
+    static func modelIdentifier() -> String {
+        var info = utsname()
+        uname(&info)
+        return withUnsafeBytes(of: &info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+    }
+
     static func encode(_ value: Any) -> Any {
         switch value {
         case let s as String: return s
@@ -123,7 +130,7 @@ final class RecordingWriter {
         self.handle = handle
         let info = Bundle.main.infoDictionary ?? [:]
         writeJSON(["type": "header", "version": RecordingFormat.version, "start": date.timeIntervalSince1970,
-                   "device": Self.modelIdentifier(), "os": UIDevice.current.systemVersion,
+                   "device": RecordingFormat.modelIdentifier(), "os": UIDevice.current.systemVersion,
                    "app": "\(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))"])
     }
 
@@ -135,13 +142,6 @@ final class RecordingWriter {
 
     private func write(_ text: String) {
         try? handle?.write(contentsOf: Data(text.utf8))
-    }
-
-    /// e.g. "iPhone18,2".
-    private static func modelIdentifier() -> String {
-        var info = utsname()
-        uname(&info)
-        return withUnsafeBytes(of: &info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
     }
 }
 

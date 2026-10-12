@@ -81,10 +81,10 @@ final class PowerMonitor: ObservableObject {
 
     /// False when replaying a recording: no hardware readers, nothing persisted or recorded.
     let isLive: Bool
-    private let reader: IOKitBattery?
+    let reader: IOKitBattery?
     /// Shared: a second `IOHIDEventSystemClient` in the same process reads NaN.
     private static let sharedSensors = HIDSensors()
-    private let sensors: HIDSensors?
+    let sensors: HIDSensors?
     private let smartChargeReader: SmartChargeReader?
     let recorder: RecordingWriter?
     private var smartChargeInFlight = false
