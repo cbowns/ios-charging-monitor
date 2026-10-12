@@ -203,12 +203,30 @@ struct PowerSnapshot {
         guard let name = adapterName ?? adapterDescription else { return nil }
         var text = name
         if let n = adapterNegotiated {
-            text += String(format: " · %.1f V × %.2f A", Double(n.voltage_mV) / 1000, Double(n.current_mA) / 1000)
+            text += " · " + Formatting.voltsAmps(voltage_mV: n.voltage_mV, current_mA: n.current_mA)
         } else if let w = adapterWatts {
             text += " · \(w) W"
         }
         if adapterIsWireless { text += " · wireless" }
         return text
+    }
+
+    /// What the adapter is currently offering, e.g. "15.0 V × 3.00 A · 45 W". MagSafe pucks
+    /// report a wattage tier here that steps up as the puck and its upstream adapter negotiate.
+    var adapterProfileDescription: String? {
+        if let n = adapterNegotiated {
+            var text = Formatting.voltsAmps(voltage_mV: n.voltage_mV, current_mA: n.current_mA)
+            if let w = adapterWatts { text += " · \(w) W" }
+            return text
+        }
+        return adapterWatts.map { "\($0) W" }
+    }
+
+    /// Adapter serial where available, otherwise a composite of the adapter's static fields.
+    var adapterIdentity: String? {
+        guard let a = adapter else { return nil }
+        if let serial = a["SerialString"] as? String, !serial.isEmpty { return serial }
+        return ["Name", "Description", "Model", "AdapterID"].compactMap { a[$0].map { String(describing: $0) } }.joined(separator: "|")
     }
 
     /// USB PD / HVC power profiles the adapter advertised.

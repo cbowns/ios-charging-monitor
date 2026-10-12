@@ -89,6 +89,14 @@ final class HIDSensors {
 
     var isEmpty: Bool { services.isEmpty }
 
+    struct ServiceInfo: Equatable {
+        let name: String
+        let usage: Int
+    }
+
+    /// Every discovered sensor in `Reading.id` order, including ones currently returning NaN.
+    var catalog: [ServiceInfo] { services.map { ServiceInfo(name: $0.name, usage: $0.usage) } }
+
     private func discover(matching: [String: Any], eventType: Int64) -> [Service] {
         setMatching(client, matching as CFDictionary)
         let refs = copyServices(client)?.takeRetainedValue() as? [CFTypeRef] ?? []

@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 @MainActor
 final class PowerMonitor: ObservableObject {
@@ -18,6 +19,11 @@ final class PowerMonitor: ObservableObject {
     @Published private(set) var smartChargeNotifyState: Int64 = -1
     /// Most recent observed charging hold, persisted across launches.
     @Published private(set) var lastHold: HoldObservation?
+    /// Plug, profile, thermal and display changes, oldest first (last 500).
+    @Published private(set) var events: [ChargeEvent] = []
+    @Published private(set) var ambient: Ambient?
+    private var detector = EventDetector()
+    private static let eventLimit = 500
 
     struct HoldObservation: Codable {
         let percent: Int
@@ -26,7 +32,7 @@ final class PowerMonitor: ObservableObject {
     }
 
     /// iOS's own thermal verdict; `.serious` and `.critical` mean the system is throttling.
-    @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    @Published private(set) var thermalState: ProcessInfo.ThermalState = .nominal
     var isThrottling: Bool { thermalState == .serious || thermalState == .critical }
 
     /// Highest charger input power seen since the last reset, persisted across launches.
@@ -73,9 +79,14 @@ final class PowerMonitor: ObservableObject {
     /// iPhone 17 Pro Max: 5088 mAh × ~3.87 V nominal ≈ 19.7 Wh. Adjust for other models.
     let batteryWattHours: Double = 19.7
 
-    private let reader = IOKitBattery()
-    private let sensors = HIDSensors()
-    private let smartChargeReader = SmartChargeReader()
+    /// False when replaying a recording: no hardware readers, nothing persisted or recorded.
+    let isLive: Bool
+    private let reader: IOKitBattery?
+    /// Shared: a second `IOHIDEventSystemClient` in the same process reads NaN.
+    private static let sharedSensors = HIDSensors()
+    private let sensors: HIDSensors?
+    private let smartChargeReader: SmartChargeReader?
+    let recorder: RecordingWriter?
     private var smartChargeInFlight = false
     private var task: Task<Void, Never>?
     private let interval: Duration = .seconds(1)
@@ -84,7 +95,14 @@ final class PowerMonitor: ObservableObject {
     private var percentLog: [(date: Date, percent: Int)] = []
     private var lastCharging: Bool?
 
+    /// Live monitor: reads the hardware, persists peak/hold/session, records to disk.
     init() {
+        isLive = true
+        reader = IOKitBattery()
+        sensors = Self.sharedSensors
+        smartChargeReader = SmartChargeReader()
+        recorder = RecordingWriter()
+        thermalState = ProcessInfo.processInfo.thermalState
         if let data = UserDefaults.standard.data(forKey: Self.holdKey),
            let hold = try? JSONDecoder().decode(HoldObservation.self, from: data) {
             // Drop blips recorded before debouncing existed.
@@ -104,13 +122,34 @@ final class PowerMonitor: ObservableObject {
         }
     }
 
+    /// Replay monitor: starts empty and is fed recorded snapshots through `ingest`.
+    static func forReplay() -> PowerMonitor { PowerMonitor(replay: ()) }
+
+    private init(replay: Void) {
+        isLive = false
+        reader = nil
+        sensors = nil
+        smartChargeReader = nil
+        recorder = nil
+    }
+
+    private func save<T: Encodable>(_ value: T?, forKey key: String) {
+        guard isLive else { return }
+        if let value, let data = try? JSONEncoder().encode(value) {
+            UserDefaults.standard.set(data, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
     func resetPeak() {
         peak = nil
         recentSamples.removeAll()
-        UserDefaults.standard.removeObject(forKey: Self.peakKey)
+        save(peak, forKey: Self.peakKey)
     }
 
     func start() {
+        guard isLive else { return }
         task?.cancel()
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -147,13 +186,10 @@ final class PowerMonitor: ObservableObject {
                                  sensors: sensors?.read() ?? [],
                                  chargeStatus: reader.readChargeStatus())
         chargeStatusError = reader.chargeStatusError
-        snapshot = snap
-        updateEstimate(snap)
-        updateHold(snap)
-        updateSession(snap)
-        updatePeak(snap)
-        let state = ProcessInfo.processInfo.thermalState
-        if state != thermalState { thermalState = state }
+        let ambient = Self.currentAmbient()
+        recorder?.record(snap, catalog: sensors?.catalog ?? [], ambient: ambient)
+        ingest(snap, ambient)
+
         let notifyState = SmartChargeNotificationState()
         if notifyState != smartChargeNotifyState {
             #if DEBUG
@@ -163,12 +199,6 @@ final class PowerMonitor: ObservableObject {
         }
         if refreshCount % 10 == 1 { refreshSmartCharge() }
 
-        let sample = snap.primaryWatts?.value ?? estimate?.watts
-        if let sample {
-            history.append(sample)
-            if history.count > historyLimit { history.removeFirst(history.count - historyLimit) }
-        }
-
         #if DEBUG
         if refreshCount == 1 || refreshCount % 15 == 0 {
             let readings = snap.sensors.map { "\($0.name)=\($0.formatted)" }.joined(separator: ", ")
@@ -176,6 +206,38 @@ final class PowerMonitor: ObservableObject {
             print("TICK \(refreshCount) status=\(snap.statusText) primary=\(String(describing: snap.primaryWatts)) battery=\(String(describing: snap.batteryWatts)) sensors=[\(readings)]")
         }
         #endif
+    }
+
+    /// Everything derived from one tick, shared by live polling and replay.
+    func ingest(_ snap: PowerSnapshot, _ ambient: Ambient) {
+        snapshot = snap
+        if ambient != self.ambient { self.ambient = ambient }
+        if ambient.thermal != thermalState { thermalState = ambient.thermal }
+        updateEstimate(snap)
+        updateHold(snap)
+        updateSession(snap)
+        updatePeak(snap)
+
+        let new = detector.detect(snap, ambient)
+        if !new.isEmpty {
+            for event in new { recorder?.record(event) }
+            events.append(contentsOf: new)
+            if events.count > Self.eventLimit { events.removeFirst(events.count - Self.eventLimit) }
+        }
+
+        let sample = snap.primaryWatts?.value ?? estimate?.watts
+        if let sample {
+            history.append(sample)
+            if history.count > historyLimit { history.removeFirst(history.count - historyLimit) }
+        }
+    }
+
+    private static func currentAmbient() -> Ambient {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        return Ambient(thermalState: ProcessInfo.processInfo.thermalState.rawValue,
+                       brightness: scene.map { Double($0.screen.brightness) },
+                       isDark: scene.map { $0.traitCollection.userInterfaceStyle == .dark },
+                       appState: UIApplication.shared.applicationState.rawValue)
     }
 
     /// PowerUI calls go over XPC synchronously, so they run off the main actor.
@@ -253,13 +315,6 @@ final class PowerMonitor: ObservableObject {
         }
     }
 
-    /// Adapter serial where available, otherwise a composite of the adapter's static fields.
-    private func adapterIdentity(_ snap: PowerSnapshot) -> String? {
-        guard let a = snap.adapter else { return nil }
-        if let serial = a["SerialString"] as? String, !serial.isEmpty { return serial }
-        return ["Name", "Description", "Model", "AdapterID"].compactMap { a[$0].map { String(describing: $0) } }.joined(separator: "|")
-    }
-
     /// Detects plug-in events and resets the peak at the start of each charging session.
     /// While running, any unplugged → plugged transition is a new session. On the first tick after
     /// launch, the persisted session is continued only if the phone was still plugged in when last
@@ -275,7 +330,7 @@ final class PowerMonitor: ObservableObject {
                 isNew = true
             } else if lastPluggedIn == nil {
                 if let saved = session, saved.lastSeenPluggedIn,
-                   saved.adapterIdentity == adapterIdentity(snap),
+                   saved.adapterIdentity == snap.adapterIdentity,
                    (snap.percent ?? 0) >= (saved.lastSeenPercent ?? 0) - 1 {
                     isNew = false
                 } else {
@@ -286,12 +341,12 @@ final class PowerMonitor: ObservableObject {
                 peak = nil
                 recentSamples.removeAll()
                 history.removeAll()
-                UserDefaults.standard.removeObject(forKey: Self.peakKey)
-                session = ChargingSession(start: snap.date, adapterIdentity: adapterIdentity(snap),
+                save(peak, forKey: Self.peakKey)
+                session = ChargingSession(start: snap.date, adapterIdentity: snap.adapterIdentity,
                                           lastSeenPluggedIn: true, lastSeenPercent: snap.percent)
                 persistSession()
             } else if var current = session {
-                if current.adapterIdentity == nil { current.adapterIdentity = adapterIdentity(snap) }
+                if current.adapterIdentity == nil { current.adapterIdentity = snap.adapterIdentity }
                 if !current.lastSeenPluggedIn || current.lastSeenPercent != snap.percent {
                     current.lastSeenPluggedIn = true
                     current.lastSeenPercent = snap.percent
@@ -301,7 +356,7 @@ final class PowerMonitor: ObservableObject {
                     session = current
                 }
             } else {
-                session = ChargingSession(start: snap.date, adapterIdentity: adapterIdentity(snap),
+                session = ChargingSession(start: snap.date, adapterIdentity: snap.adapterIdentity,
                                           lastSeenPluggedIn: true, lastSeenPercent: snap.percent)
                 persistSession()
             }
@@ -314,9 +369,7 @@ final class PowerMonitor: ObservableObject {
     }
 
     private func persistSession() {
-        if let session, let data = try? JSONEncoder().encode(session) {
-            UserDefaults.standard.set(data, forKey: Self.sessionKey)
-        }
+        if let session { save(session, forKey: Self.sessionKey) }
     }
 
     /// Records the peak of the headline number (charger input on USB-C, battery input on
@@ -335,16 +388,12 @@ final class PowerMonitor: ObservableObject {
             peak = PeakRecord(watts: candidate, date: snap.date,
                               adapter: snap.adapterName ?? snap.adapterDescription,
                               label: primary.label)
-            if let data = try? JSONEncoder().encode(peak) {
-                UserDefaults.standard.set(data, forKey: Self.peakKey)
-            }
+            save(peak, forKey: Self.peakKey)
         }
     }
 
     private func persistHold() {
-        if let hold = lastHold, let data = try? JSONEncoder().encode(hold) {
-            UserDefaults.standard.set(data, forKey: Self.holdKey)
-        }
+        if let lastHold { save(lastHold, forKey: Self.holdKey) }
     }
 
     /// Tracks 1% transitions and converts the slope into watts.

@@ -1,8 +1,13 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var monitor = PowerMonitor()
+    @ObservedObject var monitor: PowerMonitor
+    /// Set when showing a recording instead of live data.
+    var replay: ReplayController?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
+    @State private var showRecordings = false
+    @State private var showAllEvents = false
     @State private var showProfiles = false
     @State private var showSensors = false
     @State private var showPowerd = false
@@ -21,10 +26,12 @@ struct ContentView: View {
                 }
                 if let snap = monitor.snapshot {
                     heroSection(snap)
+                    eventsSection()
                     smartChargeSection()
                     chargingSection(snap)
                     adapterSection(snap)
                     thermalSection(snap)
+                    displaySection()
                     telemetrySection(snap)
                     chargerSection(snap)
                     rawSection(snap)
@@ -32,9 +39,26 @@ struct ContentView: View {
             }
             .listSectionSpacing(.compact)
             .environment(\.defaultMinListRowHeight, 34)
-            .navigationTitle("ChargeSpeed")
+            .navigationTitle(replay == nil ? "ChargeSpeed" : "Replay")
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                if let replay { ReplayTransport(controller: replay) }
+            }
+            .sheet(isPresented: $showRecordings) {
+                RecordingsView(currentURL: monitor.recorder?.url)
+            }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if replay != nil {
+                        Button("Done") { dismiss() }
+                    } else {
+                        Button {
+                            showRecordings = true
+                        } label: {
+                            Label("Recordings", systemImage: "waveform.path.ecg.rectangle")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         UIPasteboard.general.string = monitor.rawDump()
@@ -45,14 +69,17 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            guard monitor.isLive else { return }
             UIApplication.shared.isIdleTimerDisabled = true
             monitor.start()
         }
         .onDisappear {
+            guard monitor.isLive else { return }
             UIApplication.shared.isIdleTimerDisabled = false
             monitor.stop()
         }
         .onChange(of: scenePhase) { _, phase in
+            guard monitor.isLive else { return }
             if phase == .active { monitor.start() } else { monitor.stop() }
         }
     }
@@ -67,7 +94,7 @@ struct ContentView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(statusColor(snap))
                 if monitor.isThrottling {
-                    Label("Throttling · thermal state \(thermalName(monitor.thermalState))", systemImage: "thermometer.high")
+                    Label("Throttling · thermal state \(monitor.thermalState.name)", systemImage: "thermometer.high")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.red)
                 } else if let t = snap.batteryTemperatureC, t >= Self.batteryHotC {
@@ -245,15 +272,15 @@ struct ContentView: View {
     // MARK: Thermals
 
     /// Li-ion ages fastest charging hot; iOS slows charging around 40 °C and pauses near 45 °C.
-    private static let batteryWarmC = 38.0
-    private static let batteryHotC = 42.0
+    private static let batteryWarmC = EventDetector.batteryWarmC
+    private static let batteryHotC = EventDetector.batteryHotC
 
     @ViewBuilder
     private func thermalSection(_ snap: PowerSnapshot) -> some View {
         let throttling = monitor.isThrottling
         if snap.batteryTemperatureC != nil || snap.chargerJunctionTemperatureC != nil || snap.socMaxTemperatureC != nil {
             Section("Thermals") {
-                row("Thermal state", thermalName(monitor.thermalState).capitalized + (throttling ? " · throttling" : ""),
+                row("Thermal state", monitor.thermalState.name.capitalized + (throttling ? " · throttling" : ""),
                     color: throttling ? .red : (monitor.thermalState == .fair ? .orange : nil))
                 row("Battery", snap.batteryTemperatureC.map { Formatting.temperature($0) },
                     color: snap.batteryTemperatureC.map { $0 >= Self.batteryHotC ? .red : ($0 >= Self.batteryWarmC ? .orange : nil) } ?? nil)
@@ -265,13 +292,58 @@ struct ContentView: View {
         }
     }
 
-    private func thermalName(_ state: ProcessInfo.ThermalState) -> String {
-        switch state {
-        case .nominal: return "nominal"
-        case .fair: return "fair"
-        case .serious: return "serious"
-        case .critical: return "critical"
-        @unknown default: return "unknown"
+    // MARK: Events
+
+    @ViewBuilder
+    private func eventsSection() -> some View {
+        let events = monitor.events.sorted { $0.date > $1.date }
+        if !events.isEmpty {
+            Section("Events") {
+                ForEach(events.prefix(4)) { eventRow($0) }
+                if events.count > 4 {
+                    DisclosureGroup("Earlier (\(events.count - 4))", isExpanded: $showAllEvents) {
+                        ForEach(events.dropFirst(4)) { eventRow($0) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func eventRow(_ event: ChargeEvent) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: event.kind.symbol)
+                .foregroundStyle(eventColor(event.kind))
+                .frame(width: 20)
+            Text(event.detail)
+                .lineLimit(2)
+            Spacer()
+            Text(event.date.formatted(date: .omitted, time: .standard))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .font(.callout)
+        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+    }
+
+    private func eventColor(_ kind: ChargeEvent.Kind) -> Color {
+        switch kind {
+        case .plugIn: return .green
+        case .unplug: return .orange
+        case .thermal, .batteryTemp: return .red
+        case .brightness, .appearance: return .yellow
+        default: return .accentColor
+        }
+    }
+
+    // MARK: Display
+
+    @ViewBuilder
+    private func displaySection() -> some View {
+        if let ambient = monitor.ambient, ambient.brightness != nil || ambient.isDark != nil {
+            Section("Display") {
+                row("Brightness", ambient.brightness.map { String(format: "%.0f%%", $0 * 100) })
+                row("Appearance", ambient.isDark.map { $0 ? "Dark" : "Light" })
+            }
         }
     }
 
@@ -294,10 +366,8 @@ struct ContentView: View {
                     DisclosureGroup("All profiles (\(profiles.count))", isExpanded: $showProfiles) {
                         ForEach(profiles, id: \.index) { p in
                             row((p.index == snap.adapterActiveProfile ? "▶ " : "") + "Profile \(p.index)",
-                                String(format: "%.1f V × %.2f A = %.0f W",
-                                       Double(p.voltage_mV) / 1000,
-                                       Double(p.current_mA) / 1000,
-                                       Double(p.voltage_mV) * Double(p.current_mA) / 1_000_000))
+                                Formatting.voltsAmps(voltage_mV: p.voltage_mV, current_mA: p.current_mA)
+                                    + String(format: " = %.0f W", Double(p.voltage_mV) * Double(p.current_mA) / 1_000_000))
                         }
                     }
                 }
@@ -488,5 +558,5 @@ struct Sparkline: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(monitor: PowerMonitor())
 }
