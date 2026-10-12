@@ -5,7 +5,10 @@ import Foundation
 /// IOKit is a private framework on iOS, so the handful of symbols we need are
 /// resolved with `dlsym` at runtime rather than linked. This is fine for a
 /// personal development build but will not pass App Store review.
-final class IOKitBattery {
+///
+/// Unchecked Sendable: the only mutable state, `chargeStatusError`, is written by
+/// `readChargeStatus()`, which only `PowerMonitor`'s gather queue calls.
+final class IOKitBattery: @unchecked Sendable {
     private typealias IOServiceMatchingFn =
         @convention(c) (UnsafePointer<CChar>) -> Unmanaged<CFDictionary>?
     private typealias IOServiceGetMatchingServiceFn =

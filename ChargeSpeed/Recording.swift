@@ -72,10 +72,17 @@ enum RecordingFormat {
 }
 
 /// Appends the live stream to a new file per app launch, rolling over every 12 hours.
-final class RecordingWriter {
+/// Encoding and file writes happen on a private queue; callers never block.
+final class RecordingWriter: @unchecked Sendable {
     private static let rollover: TimeInterval = 12 * 3600
+    private let queue = DispatchQueue(label: "com.gregwilson.chargespeed.recorder", qos: .utility)
+    private let lock = NSLock()
+    private var currentURL: URL?
 
-    private(set) var url: URL?
+    /// The file being written.
+    var url: URL? { lock.withLock { currentURL } }
+
+    // Queue-confined.
     private var handle: FileHandle?
     private var startedAt = Date.distantPast
     private var catalog: [HIDSensors.ServiceInfo]?
@@ -84,6 +91,17 @@ final class RecordingWriter {
     deinit { try? handle?.close() }
 
     func record(_ snap: PowerSnapshot, catalog: [HIDSensors.ServiceInfo], ambient: Ambient) {
+        queue.async { [self] in write(snap, catalog: catalog, ambient: ambient) }
+    }
+
+    func record(_ event: ChargeEvent) {
+        queue.async { [self] in
+            writeJSON(["type": "event", "t": event.date.timeIntervalSince1970,
+                       "kind": event.kind.rawValue, "detail": event.detail])
+        }
+    }
+
+    private func write(_ snap: PowerSnapshot, catalog: [HIDSensors.ServiceInfo], ambient: Ambient) {
         if handle == nil || snap.date.timeIntervalSince(startedAt) > Self.rollover {
             open(at: snap.date)
         }
@@ -115,11 +133,6 @@ final class RecordingWriter {
         write(line + "}\n")
     }
 
-    func record(_ event: ChargeEvent) {
-        writeJSON(["type": "event", "t": event.date.timeIntervalSince1970,
-                   "kind": event.kind.rawValue, "detail": event.detail])
-    }
-
     private func open(at date: Date) {
         try? handle?.close()
         handle = nil
@@ -131,12 +144,18 @@ final class RecordingWriter {
         let url = dir.appending(path: RecordingFormat.fileNameFormatter.string(from: date) + ".jsonl")
         guard FileManager.default.createFile(atPath: url.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: url) else { return }
-        self.url = url
+        lock.withLock { currentURL = url }
         self.handle = handle
         let info = Bundle.main.infoDictionary ?? [:]
         writeJSON(["type": "header", "version": RecordingFormat.version, "start": date.timeIntervalSince1970,
-                   "device": RecordingFormat.modelIdentifier(), "os": UIDevice.current.systemVersion,
+                   "device": RecordingFormat.modelIdentifier(), "os": Self.osVersion(),
                    "app": "\(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))"])
+    }
+
+    /// e.g. "27.0"; `UIDevice` is main-actor only and this runs on the writer queue.
+    private static func osVersion() -> String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return v.patchVersion > 0 ? "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)" : "\(v.majorVersion).\(v.minorVersion)"
     }
 
     private func writeJSON(_ object: [String: Any]) {
@@ -235,6 +254,8 @@ struct Recording {
         self.events = events
     }
 
+    var profile: DeviceProfile { .forModel(device) }
+
     func snapshot(at index: Int) -> PowerSnapshot {
         let frame = frames[index]
         let catalog = frame.catalog >= 0 ? catalogs[frame.catalog] : []
@@ -246,6 +267,6 @@ struct Recording {
         }
         func dict(_ slot: Int) -> [String: Any]? { frame.dicts[slot] >= 0 ? dictPool[frame.dicts[slot]] : nil }
         return PowerSnapshot(date: frame.date, raw: dict(0) ?? [:], powerSource: dict(1),
-                             adapterDetails: dict(2), sensors: sensors, chargeStatus: dict(3))
+                             adapterDetails: dict(2), sensors: sensors, chargeStatus: dict(3), profile: profile)
     }
 }

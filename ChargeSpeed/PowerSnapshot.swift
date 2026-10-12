@@ -13,19 +13,23 @@ struct PowerSnapshot {
     let sensors: [HIDSensors.Reading]
     /// powerd charge status (`IOPSCopyChargeStatus`), when the sandbox allows it.
     let chargeStatus: [String: Any]?
+    /// The phone this came from; replays use the recording's model.
+    let profile: DeviceProfile
 
     init(date: Date,
          raw: [String: Any],
          powerSource: [String: Any]? = nil,
          adapterDetails: [String: Any]? = nil,
          sensors: [HIDSensors.Reading] = [],
-         chargeStatus: [String: Any]? = nil) {
+         chargeStatus: [String: Any]? = nil,
+         profile: DeviceProfile = .current) {
         self.date = date
         self.raw = raw
         self.powerSource = powerSource
         self.adapterDetails = adapterDetails
         self.sensors = sensors
         self.chargeStatus = chargeStatus
+        self.profile = profile
     }
 
     /// e.g. "Charging", "Charging On Hold", "Charged".
@@ -119,7 +123,7 @@ struct PowerSnapshot {
     var wirelessKind: String { isMagSafe ? "MagSafe" : "wireless" }
 
     var sensorBatteryCurrent: Double? { sensor("Charger IQ0B") }
-    var sensorBatteryVoltage: Double? { sensor("Charger VQ0l") ?? sensor("PMU VP0u") }
+    var sensorBatteryVoltage: Double? { profile.batteryVoltageSensors.lazy.compactMap(sensor).first }
     var sensorBatteryWatts: Double? {
         guard let i = sensorBatteryCurrent, let v = sensorBatteryVoltage else { return nil }
         return i * v

@@ -75,9 +75,9 @@ final class PowerMonitor: ObservableObject {
         let window: TimeInterval
     }
 
-    /// Usable battery energy used to convert %/h into watts.
-    /// iPhone 17 Pro Max: 5088 mAh × ~3.87 V nominal ≈ 19.7 Wh. Adjust for other models.
-    let batteryWattHours: Double = 19.7
+    /// Usable battery energy used to convert %/h into watts, from the device profile.
+    var batteryWattHours: Double { profile.batteryWattHours }
+    let profile: DeviceProfile
 
     /// False when replaying a recording: no hardware readers, nothing persisted or recorded.
     let isLive: Bool
@@ -90,6 +90,12 @@ final class PowerMonitor: ObservableObject {
     private var smartChargeInFlight = false
     private var task: Task<Void, Never>?
     private let interval: Duration = .seconds(1)
+    /// powerd, registry and sensor-window reads happen here so the main thread only updates UI.
+    private static let gatherQueue = DispatchQueue(label: "com.gregwilson.chargespeed.gather", qos: .userInitiated)
+    /// Screen brightness, refreshed on `UIScreen.brightnessDidChangeNotification`; reading it
+    /// is a synchronous call to backboardd, so it isn't polled.
+    private var brightness: Double?
+    private var brightnessObserver: NSObjectProtocol?
     private let historyLimit = 120
     private var refreshCount = 0
     private var percentLog: [(date: Date, percent: Int)] = []
@@ -98,6 +104,7 @@ final class PowerMonitor: ObservableObject {
     /// Live monitor: reads the hardware, persists peak/hold/session, records to disk.
     init() {
         isLive = true
+        profile = .current
         reader = IOKitBattery()
         sampler = Self.sharedSampler
         smartChargeReader = SmartChargeReader()
@@ -123,10 +130,11 @@ final class PowerMonitor: ObservableObject {
     }
 
     /// Replay monitor: starts empty and is fed recorded snapshots through `ingest`.
-    static func forReplay() -> PowerMonitor { PowerMonitor(replay: ()) }
+    static func forReplay(profile: DeviceProfile) -> PowerMonitor { PowerMonitor(replay: profile) }
 
-    private init(replay: Void) {
+    private init(replay profile: DeviceProfile) {
         isLive = false
+        self.profile = profile
         reader = nil
         sampler = nil
         smartChargeReader = nil
@@ -152,10 +160,12 @@ final class PowerMonitor: ObservableObject {
         guard isLive else { return }
         sampler?.start()
         task?.cancel()
+        observeBrightness()
         task = Task { [weak self] in
             while !Task.isCancelled {
-                self?.refresh()
-                try? await Task.sleep(for: self?.interval ?? .seconds(1))
+                let next = ContinuousClock.now + (self?.interval ?? .seconds(1))
+                await self?.refresh()
+                try? await Task.sleep(until: next)
             }
         }
     }
@@ -166,18 +176,15 @@ final class PowerMonitor: ObservableObject {
         sampler?.stop()
     }
 
-    func refresh() {
-        guard let reader else {
-            errorMessage = "IOKit could not be loaded on this device."
-            return
-        }
-        guard let props = reader.readProperties() else {
-            errorMessage = "No IOPMPowerSource service found."
-            return
-        }
-        errorMessage = nil
-        refreshCount += 1
+    private struct Gathered {
+        let snapshot: PowerSnapshot
+        let catalog: [HIDSensors.ServiceInfo]
+        let chargeStatusError: Int32
+    }
 
+    /// Reads powerd, the registry and the latest sensor window on `gatherQueue`.
+    private nonisolated static func gather(_ reader: IOKitBattery, _ sampler: SensorSampler?) -> Gathered? {
+        guard let props = reader.readProperties() else { return nil }
         let sources = reader.readPowerSources()
         let internalBattery = sources.first { ($0["Type"] as? String) == "InternalBattery" } ?? sources.first
         let window = sampler?.take()
@@ -187,9 +194,28 @@ final class PowerMonitor: ObservableObject {
                                  adapterDetails: reader.readAdapterDetails(),
                                  sensors: window?.readings ?? [],
                                  chargeStatus: reader.readChargeStatus())
-        chargeStatusError = reader.chargeStatusError
-        let ambient = Self.currentAmbient()
-        recorder?.record(snap, catalog: window?.catalog ?? [], ambient: ambient)
+        return Gathered(snapshot: snap, catalog: window?.catalog ?? [], chargeStatusError: reader.chargeStatusError)
+    }
+
+    func refresh() async {
+        guard let reader else {
+            errorMessage = "IOKit could not be loaded on this device."
+            return
+        }
+        let sampler = sampler
+        let gathered = await withCheckedContinuation { continuation in
+            Self.gatherQueue.async { continuation.resume(returning: Self.gather(reader, sampler)) }
+        }
+        guard let gathered else {
+            errorMessage = "No IOPMPowerSource service found."
+            return
+        }
+        errorMessage = nil
+        refreshCount += 1
+        let snap = gathered.snapshot
+        chargeStatusError = gathered.chargeStatusError
+        let ambient = currentAmbient()
+        recorder?.record(snap, catalog: gathered.catalog, ambient: ambient)
         ingest(snap, ambient)
 
         let notifyState = SmartChargeNotificationState()
@@ -234,12 +260,24 @@ final class PowerMonitor: ObservableObject {
         }
     }
 
-    private static func currentAmbient() -> Ambient {
+    private func currentAmbient() -> Ambient {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        if brightness == nil, let scene { brightness = Double(scene.screen.brightness) }
         return Ambient(thermalState: ProcessInfo.processInfo.thermalState.rawValue,
-                       brightness: scene.map { Double($0.screen.brightness) },
+                       brightness: brightness,
                        isDark: scene.map { $0.traitCollection.userInterfaceStyle == .dark },
                        appState: UIApplication.shared.applicationState.rawValue)
+    }
+
+    private func observeBrightness() {
+        guard brightnessObserver == nil else { return }
+        brightnessObserver = NotificationCenter.default.addObserver(
+            forName: UIScreen.brightnessDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let screen = note.object as? UIScreen else { return }
+            let value = Double(screen.brightness)
+            MainActor.assumeIsolated { self?.brightness = value }
+        }
     }
 
     /// PowerUI calls go over XPC synchronously, so they run off the main actor.

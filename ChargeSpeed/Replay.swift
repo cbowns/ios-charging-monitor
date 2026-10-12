@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class ReplayController: ObservableObject {
     let recording: Recording
-    @Published private(set) var monitor = PowerMonitor.forReplay()
+    @Published private(set) var monitor: PowerMonitor
     /// Number of frames ingested so far.
     @Published private(set) var position = 0
     @Published private(set) var isPlaying = false
@@ -16,6 +16,7 @@ final class ReplayController: ObservableObject {
 
     init(recording: Recording) {
         self.recording = recording
+        monitor = .forReplay(profile: recording.profile)
         advance(to: 1)
     }
 
@@ -54,7 +55,7 @@ final class ReplayController: ObservableObject {
     func seek(to frame: Int) {
         let target = min(max(frame, 1), count)
         if target < position {
-            monitor = .forReplay()
+            monitor = .forReplay(profile: recording.profile)
             position = 0
         }
         advance(to: target)
