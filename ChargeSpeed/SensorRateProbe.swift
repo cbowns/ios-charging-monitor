@@ -1,130 +1,122 @@
 import SwiftUI
 
-/// Measures how often each HID sensor actually changes, to pick a polling rate. Reads every
-/// sensor at ~50 Hz for 10 s and records when each value changes; also times the powerd and
-/// registry calls. Run it while charging over USB-C so the charger sensors are moving.
+/// Measures each sensor's real update rate, to tune `SensorSampler`. Runs on the sampler's
+/// queue with sampling held off (about 35 s):
+/// 1. reads every sensor alone a few times, to find what one read costs and whether some
+///    sensors are slower to read than others;
+/// 2. reads each fast sensor, plus one of each slower kind, alone in a tight loop for 3 s and
+///    records when its value changes. A read takes ~1 ms, so changes are resolved to ~1 ms.
+/// Run it while charging over USB-C so the charger sensors are moving.
 @MainActor
 final class SensorRateProbe: ObservableObject {
     @Published private(set) var progress: Double?
     @Published private(set) var report: String?
 
-    private static let duration: TimeInterval = 10
-    private static let period: Duration = .milliseconds(20)
+    nonisolated private static let loopDuration: TimeInterval = 3
+    /// One representative of each slower group, by name prefix.
+    nonisolated private static let representativePrefixes = ["PMU tdie", "Charger TQ0j", "PMU tdev", "gas gauge battery"]
 
     func run(monitor: PowerMonitor) {
-        guard progress == nil, let sensors = monitor.sensors else { return }
+        guard progress == nil, let sampler = monitor.sampler else { return }
         let reader = monitor.reader
         let context = monitor.snapshot.map { snap in
             [snap.statusText, snap.primaryWatts.map { String(format: "%.2f W %@", $0.value, $0.label) }, snap.adapterSummary]
                 .compactMap { $0 }.joined(separator: " · ")
         } ?? "no snapshot"
+        let header = "Sensor update rates (single-sensor) · \(RecordingFormat.modelIdentifier()) · iOS \(UIDevice.current.systemVersion) · app \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?")"
+        let tickStats = sampler.tickStats()
         progress = 0
         report = nil
-        // Keep the 1 Hz poll (and its periodic rescan) out of the way.
-        monitor.stop()
 
-        Task {
-            let catalog = sensors.catalog
-            let powerd = Self.timePowerd(reader)
-
-            var last = [Double?](repeating: nil, count: catalog.count)
-            var changes = [[TimeInterval]](repeating: [], count: catalog.count)
-            var seen = [Int](repeating: 0, count: catalog.count)
-            var readTimes: [TimeInterval] = []
-            let clock = ContinuousClock()
-            let start = clock.now
-            func elapsed(_ since: ContinuousClock.Instant) -> TimeInterval {
-                let d = clock.now - since
-                return Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        sampler.exclusive { sensors, catalog, fastIDs in
+            let setProgress = { (p: Double) in DispatchQueue.main.async { self.progress = min(max(p, 0), 1) } }
+            let text = Self.measure(sensors: sensors, catalog: catalog, fastIDs: fastIDs, reader: reader,
+                                    header: header, context: context, tickStats: tickStats, progress: setProgress)
+            Self.save(text)
+            DispatchQueue.main.async {
+                self.report = text
+                self.progress = nil
             }
-
-            while elapsed(start) < Self.duration {
-                let readStart = clock.now
-                let readings = sensors.read()
-                readTimes.append(elapsed(readStart))
-                let t = elapsed(start)
-                for r in readings where r.id < catalog.count {
-                    seen[r.id] += 1
-                    if let previous = last[r.id], previous != r.value { changes[r.id].append(t) }
-                    last[r.id] = r.value
-                }
-                progress = t / Self.duration
-                try? await Task.sleep(for: Self.period)
-            }
-            let total = elapsed(start)
-
-            report = Self.format(catalog: catalog, changes: changes, seen: seen, last: last,
-                                 readTimes: readTimes, total: total, powerd: powerd, context: context)
-            Self.save(report!)
-            progress = nil
-            monitor.start()
         }
     }
 
-    /// Average milliseconds per call over 20 calls each.
-    private static func timePowerd(_ reader: IOKitBattery?) -> [(String, Double)] {
-        guard let reader else { return [] }
-        func time(_ body: () -> Void) -> Double {
-            let clock = ContinuousClock()
-            let d = clock.measure { for _ in 0..<20 { body() } }
-            return (Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18) * 1000 / 20
-        }
-        return [
-            ("IOPSCopyPowerSourcesInfo", time { _ = reader.readPowerSources() }),
-            ("IOPSCopyExternalPowerAdapterDetails", time { _ = reader.readAdapterDetails() }),
-            ("IOPMPowerSource registry", time { _ = reader.readProperties() }),
-        ]
-    }
-
-    private static func format(catalog: [HIDSensors.ServiceInfo], changes: [[TimeInterval]], seen: [Int],
-                               last: [Double?], readTimes: [TimeInterval], total: TimeInterval,
-                               powerd: [(String, Double)], context: String) -> String {
-        let info = Bundle.main.infoDictionary ?? [:]
-        let sorted = readTimes.sorted()
-        let samples = readTimes.count
-        var lines = [
-            "Sensor update rates · \(RecordingFormat.modelIdentifier()) · iOS \(UIDevice.current.systemVersion) · app \(info["CFBundleShortVersionString"] ?? "?")",
-            Date.now.formatted(date: .abbreviated, time: .standard),
-            "State: \(context)",
-            String(format: "Sampled %.1f s, %d reads (%.1f Hz achieved, 50 Hz target)", total, samples, Double(samples) / total),
-            String(format: "HID read of %d sensors: median %.2f ms, max %.2f ms",
-                   catalog.count, (sorted.isEmpty ? 0 : sorted[sorted.count / 2]) * 1000, (sorted.last ?? 0) * 1000),
-        ]
-        lines += powerd.map { String(format: "%@: %.2f ms per call", $0.0, $0.1) }
-        lines.append("")
-
+    nonisolated private static func measure(sensors: HIDSensors, catalog: [HIDSensors.ServiceInfo], fastIDs: [Int],
+                                            reader: IOKitBattery?, header: String, context: String,
+                                            tickStats: SensorSampler.TickStats,
+                                            progress: (Double) -> Void) -> String {
+        let clock = ContinuousClock()
+        func seconds(_ d: Duration) -> Double { Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18 }
+        func ms(_ v: Double) -> String { String(format: "%.2f ms", v * 1000) }
+        func median(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.sorted()[values.count / 2] }
         let unit = { (usage: Int) in usage == 2 ? "A" : usage == 3 ? "V" : usage == 5 ? "°C" : "?" }
-        let sampleInterval = total / Double(max(samples, 1))
-        var changing: [(name: String, median: Double, min: Double, count: Int, value: Double?)] = []
-        var still: [String] = []
-        var missing: [String] = []
-        for i in catalog.indices {
-            let name = "\(catalog[i].name) [\(unit(catalog[i].usage))]"
-            if seen[i] == 0 { missing.append(name); continue }
-            let times = changes[i]
-            guard times.count >= 2 else {
-                still.append(name + (times.count == 1 ? " (changed once)" : ""))
-                continue
-            }
-            let intervals = zip(times.dropFirst(), times).map { $0 - $1 }.sorted()
-            changing.append((name, intervals[intervals.count / 2], intervals.first ?? 0, times.count, last[i]))
-        }
-        changing.sort { $0.median < $1.median }
+        func label(_ i: Int) -> String { "\(catalog[i].name) [\(unit(catalog[i].usage))]" }
 
-        lines.append("Changing (median / min interval between changes · changes in run · last value):")
-        for c in changing {
-            let floor = c.median <= sampleInterval * 1.5 ? "  ← at sampling rate, may be faster" : ""
-            lines.append(String(format: "  %@: %.0f ms / %.0f ms · %d · %@%@",
-                                c.name, c.median * 1000, c.min * 1000, c.count,
-                                c.value.map { String(format: "%.4g", $0) } ?? "-", floor))
+        var lines = [header, Date.now.formatted(date: .abbreviated, time: .standard), "State: \(context)",
+                     String(format: "Sampler (last %d ticks at 10 Hz): median %.1f ms, max %.1f ms per tick",
+                            tickStats.ticks, tickStats.medianMs, tickStats.maxMs)]
+
+        // powerd and registry cost.
+        if let reader {
+            func time(_ body: () -> Void) -> Double { seconds(clock.measure { for _ in 0..<20 { body() } }) / 20 }
+            lines.append("powerd: sources \(ms(time { _ = reader.readPowerSources() })) · adapter \(ms(time { _ = reader.readAdapterDetails() })) · registry \(ms(time { _ = reader.readProperties() })) per call")
+        }
+
+        // 1. Per-sensor read cost.
+        var cost: [(id: Int, seconds: Double)] = []
+        for i in catalog.indices {
+            var samples: [Double] = []
+            for _ in 0..<5 { samples.append(seconds(clock.measure { _ = sensors.read([i]) })) }
+            cost.append((i, median(samples)))
+        }
+        let typical = median(cost.map(\.seconds))
+        lines.append("")
+        lines.append("Read cost, one sensor at a time (\(catalog.count) sensors): median \(ms(typical)), total \(ms(cost.reduce(0) { $0 + $1.seconds }))")
+        let slowReads = cost.filter { $0.seconds > typical * 2 }.sorted { $0.seconds > $1.seconds }
+        if slowReads.isEmpty {
+            lines.append("  No sensor takes more than 2× the median.")
+        } else {
+            for c in slowReads { lines.append("  slow: \(label(c.id)) \(ms(c.seconds))") }
+        }
+        progress(0.05)
+
+        // 2. Tight loop per target sensor.
+        var targets = fastIDs
+        for prefix in representativePrefixes {
+            if let i = catalog.indices.first(where: { catalog[$0].name.hasPrefix(prefix) }), !targets.contains(i) { targets.append(i) }
         }
         lines.append("")
-        lines.append("Unchanged during the run (\(still.count)): " + still.joined(separator: ", "))
-        if !missing.isEmpty { lines.append("Never readable (NaN) (\(missing.count)): " + missing.joined(separator: ", ")) }
+        lines.append("Tight loop, \(Int(loopDuration)) s per sensor. Change interval is an upper bound on the update period")
+        lines.append("(a steady value can repeat across updates). Columns: reads/s · median read · changes · median / min change interval · distinct values · last")
+        for (n, i) in targets.enumerated() {
+            var reads = 0
+            var readTimes: [Double] = []
+            var changes: [Double] = []
+            var last: Double?
+            var distinct = Set<Double>()
+            let start = clock.now
+            while seconds(clock.now - start) < loopDuration {
+                let t0 = clock.now
+                let value = sensors.read([i]).first?.value
+                readTimes.append(seconds(clock.now - t0))
+                reads += 1
+                guard let value else { continue }
+                distinct.insert(value)
+                if let last, last != value { changes.append(seconds(clock.now - start)) }
+                last = value
+            }
+            let intervals = zip(changes.dropFirst(), changes).map { $0 - $1 }
+            let changeText = intervals.isEmpty
+                ? (changes.isEmpty ? "no change" : "changed once")
+                : "\(ms(median(intervals))) / \(ms(intervals.min() ?? 0))"
+            lines.append(String(format: "  %@: %.0f/s · %@ · %d · %@ · %d · %@",
+                                label(i), Double(reads) / loopDuration, ms(median(readTimes)), changes.count,
+                                changeText, distinct.count, last.map { String(format: "%.4g", $0) } ?? "NaN"))
+            progress(0.05 + 0.95 * Double(n + 1) / Double(targets.count))
+        }
         return lines.joined(separator: "\n")
     }
 
-    private static func save(_ text: String) {
+    nonisolated private static func save(_ text: String) {
         let name = "sensor-rates-" + RecordingFormat.fileNameFormatter.string(from: .now) + ".txt"
         try? text.write(to: URL.documentsDirectory.appending(path: name), atomically: true, encoding: .utf8)
     }

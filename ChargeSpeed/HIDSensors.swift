@@ -3,7 +3,8 @@ import Foundation
 /// Reads Apple's vendor power and temperature sensors through the private
 /// `IOHIDEventSystemClient` API. On iOS 26 a sandboxed app can create one client
 /// and copy sensor events from it; additional clients in the same process return
-/// NaN, so a single instance is created once and reused.
+/// NaN, so a single instance is created once and reused. Not thread-safe: `SensorSampler`
+/// confines it to one queue. Each sensor costs ~1.1 ms to read (iPhone 14 Pro, iOS 27).
 ///
 /// Sensor names seen on iPhone 17 Pro Max (usage 2 = current in A, 3 = voltage in V):
 ///   Charger VQ0u / IQ0u   USB-C input voltage / current
@@ -17,7 +18,16 @@ final class HIDSensors {
         let name: String
         /// HID usage: 2 = current (A), 3 = voltage (V), 5 = temperature (°C).
         let usage: Int
+        /// The latest value, or the mean over the sampling window for fast-sampled sensors.
         let value: Double
+        /// Min/max/sample count over the window, for fast-sampled sensors.
+        var spread: Spread?
+
+        struct Spread {
+            let min: Double
+            let max: Double
+            let count: Int
+        }
 
         var formatted: String {
             switch usage {
@@ -108,8 +118,13 @@ final class HIDSensors {
     }
 
     /// Current values of every discovered sensor. Sensors that return NaN are skipped.
-    func read() -> [Reading] {
-        services.enumerated().compactMap { index, service in
+    func read() -> [Reading] { read(Array(services.indices)) }
+
+    /// Current values of the sensors at these catalog indices.
+    func read(_ ids: [Int]) -> [Reading] {
+        ids.compactMap { index in
+            guard index < services.count else { return nil }
+            let service = services[index]
             guard let event = copyEvent(service.ref, service.eventType, 0, 0)?.takeRetainedValue() else { return nil }
             let value = getFloat(event, Int32(service.eventType << 16))
             guard value.isFinite else { return nil }

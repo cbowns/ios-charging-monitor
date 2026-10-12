@@ -7,7 +7,8 @@ import UIKit
 ///     header   version, start, device, os, app
 ///     sensors  names, usages: the HID sensor catalog; written at start and whenever it changes
 ///     dict     key (raw | powerSource | adapterDetails | chargeStatus), value: written when it changes
-///     tick     t, v (sensor values in catalog order, null = NaN), th, br, dark, app
+///     tick     t, v (sensor values in catalog order, null = NaN), th, br, dark, app,
+///              rng ([id, min, max, samples] for fast-sampled sensors, whose v is the window mean)
 ///     event    t, kind, detail
 ///
 /// Times are seconds since 1970. Dictionaries hold plist values; Data and Date become
@@ -104,6 +105,10 @@ final class RecordingWriter {
         var slots = [String](repeating: "null", count: catalog.count)
         for r in snap.sensors where r.id < slots.count { slots[r.id] = RecordingFormat.number(r.value) }
         var line = "{\"type\":\"tick\",\"t\":\(t),\"v\":[\(slots.joined(separator: ","))],\"th\":\(ambient.thermalState)"
+        let spreads = snap.sensors.compactMap { r in
+            r.spread.map { "[\(r.id),\(RecordingFormat.number($0.min)),\(RecordingFormat.number($0.max)),\($0.count)]" }
+        }
+        if !spreads.isEmpty { line += ",\"rng\":[\(spreads.joined(separator: ","))]" }
         if let b = ambient.brightness { line += ",\"br\":\(RecordingFormat.number(b))" }
         if let d = ambient.isDark { line += ",\"dark\":\(d)" }
         if let a = ambient.appState { line += ",\"app\":\(a)" }
@@ -155,6 +160,7 @@ struct Recording {
         let catalog: Int
         let dicts: [Int]
         let ambient: Ambient
+        let spreads: [(id: Int, spread: HIDSensors.Reading.Spread)]
     }
 
     let url: URL
@@ -208,8 +214,11 @@ struct Recording {
                                       brightness: obj["br"] as? Double,
                                       isDark: obj["dark"] as? Bool,
                                       appState: obj["app"] as? Int)
+                let spreads = (obj["rng"] as? [[Double]] ?? []).compactMap { e -> (Int, HIDSensors.Reading.Spread)? in
+                    e.count == 4 ? (Int(e[0]), .init(min: e[1], max: e[2], count: Int(e[3]))) : nil
+                }
                 frames.append(Frame(date: date, values: values, catalog: catalogs.count - 1,
-                                    dicts: current, ambient: ambient))
+                                    dicts: current, ambient: ambient, spreads: spreads))
             case "event":
                 if let kind = (obj["kind"] as? String).flatMap(ChargeEvent.Kind.init(rawValue:)) {
                     events.append(ChargeEvent(date: date, kind: kind, detail: obj["detail"] as? String ?? ""))
@@ -229,8 +238,11 @@ struct Recording {
     func snapshot(at index: Int) -> PowerSnapshot {
         let frame = frames[index]
         let catalog = frame.catalog >= 0 ? catalogs[frame.catalog] : []
-        let sensors = zip(catalog.indices, frame.values).compactMap { i, v in
-            v.isNaN ? nil : HIDSensors.Reading(id: i, name: catalog[i].name, usage: catalog[i].usage, value: v)
+        let sensors = zip(catalog.indices, frame.values).compactMap { i, v -> HIDSensors.Reading? in
+            guard !v.isNaN else { return nil }
+            var r = HIDSensors.Reading(id: i, name: catalog[i].name, usage: catalog[i].usage, value: v)
+            r.spread = frame.spreads.first { $0.id == i }?.spread
+            return r
         }
         func dict(_ slot: Int) -> [String: Any]? { frame.dicts[slot] >= 0 ? dictPool[frame.dicts[slot]] : nil }
         return PowerSnapshot(date: frame.date, raw: dict(0) ?? [:], powerSource: dict(1),

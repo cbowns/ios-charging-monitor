@@ -83,8 +83,8 @@ final class PowerMonitor: ObservableObject {
     let isLive: Bool
     let reader: IOKitBattery?
     /// Shared: a second `IOHIDEventSystemClient` in the same process reads NaN.
-    private static let sharedSensors = HIDSensors()
-    let sensors: HIDSensors?
+    private static let sharedSampler = HIDSensors().map(SensorSampler.init)
+    let sampler: SensorSampler?
     private let smartChargeReader: SmartChargeReader?
     let recorder: RecordingWriter?
     private var smartChargeInFlight = false
@@ -99,7 +99,7 @@ final class PowerMonitor: ObservableObject {
     init() {
         isLive = true
         reader = IOKitBattery()
-        sensors = Self.sharedSensors
+        sampler = Self.sharedSampler
         smartChargeReader = SmartChargeReader()
         recorder = RecordingWriter()
         thermalState = ProcessInfo.processInfo.thermalState
@@ -128,7 +128,7 @@ final class PowerMonitor: ObservableObject {
     private init(replay: Void) {
         isLive = false
         reader = nil
-        sensors = nil
+        sampler = nil
         smartChargeReader = nil
         recorder = nil
     }
@@ -150,6 +150,7 @@ final class PowerMonitor: ObservableObject {
 
     func start() {
         guard isLive else { return }
+        sampler?.start()
         task?.cancel()
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -162,6 +163,7 @@ final class PowerMonitor: ObservableObject {
     func stop() {
         task?.cancel()
         task = nil
+        sampler?.stop()
     }
 
     func refresh() {
@@ -178,16 +180,16 @@ final class PowerMonitor: ObservableObject {
 
         let sources = reader.readPowerSources()
         let internalBattery = sources.first { ($0["Type"] as? String) == "InternalBattery" } ?? sources.first
-        if refreshCount % 30 == 1 { sensors?.rescan() }
+        let window = sampler?.take()
         let snap = PowerSnapshot(date: .now,
                                  raw: props,
                                  powerSource: internalBattery,
                                  adapterDetails: reader.readAdapterDetails(),
-                                 sensors: sensors?.read() ?? [],
+                                 sensors: window?.readings ?? [],
                                  chargeStatus: reader.readChargeStatus())
         chargeStatusError = reader.chargeStatusError
         let ambient = Self.currentAmbient()
-        recorder?.record(snap, catalog: sensors?.catalog ?? [], ambient: ambient)
+        recorder?.record(snap, catalog: window?.catalog ?? [], ambient: ambient)
         ingest(snap, ambient)
 
         let notifyState = SmartChargeNotificationState()

@@ -413,20 +413,22 @@ struct ContentView: View {
     @ViewBuilder
     private func rawSection(_ snap: PowerSnapshot) -> some View {
         Section("Raw data") {
-            if monitor.isLive, monitor.sensors != nil {
+            if monitor.isLive, monitor.sampler != nil {
                 if let progress = rateProbe.progress {
                     ProgressView(value: progress) {
-                        Text("Sampling sensors at 50 Hz…").font(.callout)
+                        Text("Timing each sensor…").font(.callout)
                     }
                 } else {
-                    Button("Measure sensor update rates (10 s)") { rateProbe.run(monitor: monitor) }
+                    Button("Measure sensor update rates (~35 s)") { rateProbe.run(monitor: monitor) }
                         .font(.callout)
                 }
             }
             if !snap.sensors.isEmpty {
                 DisclosureGroup("All sensors (\(snap.sensors.count))", isExpanded: $showSensors) {
                     ForEach(snap.sensors.sorted { $0.name < $1.name }) { r in
-                        row(r.name, r.formatted)
+                        row(r.name, r.formatted + (r.spread.map {
+                            String(format: " (%.3f–%.3f, %d×)", $0.min, $0.max, $0.count)
+                        } ?? ""))
                     }
                 }
             }
