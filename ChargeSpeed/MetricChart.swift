@@ -97,7 +97,8 @@ struct MetricChartView: View {
         self.monitor = monitor
         self.metric = metric
         let last = monitor.series.points[metric]?.last?.date ?? .now
-        _scrollX = State(initialValue: last.addingTimeInterval(-Span.tenMinutes.rawValue))
+        let length = Span.tenMinutes.rawValue
+        _scrollX = State(initialValue: last.addingTimeInterval(Self.trailingPad(length) - length))
     }
     @State private var followLive = true
     @State private var selected: Date?
@@ -113,6 +114,9 @@ struct MetricChartView: View {
         let first = raw.first?.date ?? .now
         let last = raw.last?.date ?? .now
         let length = span == .all ? max(last.timeIntervalSince(first), 60) : span.rawValue
+        // The x axis runs a little past the newest point; a scrollable chart's content ends at
+        // its domain, and a time label centred on a tick near the end was cropped.
+        let end = last.addingTimeInterval(Self.trailingPad(length))
         let events = monitor.events.filter { Self.markedEvents.contains($0.kind) && $0.date >= first && $0.date <= last }
 
         NavigationStack {
@@ -127,12 +131,12 @@ struct MetricChartView: View {
                     ContentUnavailableView("Not enough data yet", systemImage: "chart.xyaxis.line",
                                            description: Text("Values are kept from app launch, one per second."))
                 } else {
-                    chart(points, events: events, first: first, length: length)
+                    chart(points, events: events, first: first, end: end, length: length)
                 }
                 if !followLive {
                     Button {
                         followLive = true
-                        scrollX = last.addingTimeInterval(-length)
+                        scrollX = end.addingTimeInterval(-length)
                     } label: {
                         Label("Now", systemImage: "arrow.right.to.line")
                     }
@@ -149,14 +153,14 @@ struct MetricChartView: View {
             }
             .onChange(of: span) { _, _ in
                 followLive = true
-                scrollX = last.addingTimeInterval(-length)
+                scrollX = end.addingTimeInterval(-length)
             }
-            .onChange(of: last) { _, newLast in
-                if followLive { scrollX = newLast.addingTimeInterval(-length) }
+            .onChange(of: last) { _, _ in
+                if followLive { scrollX = end.addingTimeInterval(-length) }
             }
             .onChange(of: scrollX) { _, x in
                 // Scrolled back by hand: stop following until "Now".
-                if x.addingTimeInterval(length) < last.addingTimeInterval(-3) { followLive = false }
+                if x.addingTimeInterval(length) < end.addingTimeInterval(-3) { followLive = false }
             }
         }
     }
@@ -180,7 +184,9 @@ struct MetricChartView: View {
     }
 
     @ViewBuilder
-    private func chart(_ points: [SeriesStore.Point], events: [ChargeEvent], first: Date, length: TimeInterval) -> some View {
+    private func chart(_ points: [SeriesStore.Point], events: [ChargeEvent], first: Date, end: Date, length: TimeInterval) -> some View {
+        // At least one full span wide, so a short history sits at the right (live) edge.
+        let domainStart = min(first, end.addingTimeInterval(-length))
         let chart = Chart {
             ForEach(points, id: \.date) { p in
                 if p.high > p.low {
@@ -206,12 +212,18 @@ struct MetricChartView: View {
                     .foregroundStyle(Color.primary.opacity(0.4))
             }
         }
+        .chartXScale(domain: domainStart...end)
         .chartYScale(domain: .automatic(includesZero: metric.includesZero))
         .chartXSelection(value: $selected)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+            AxisMarks(values: Self.ticks(from: domainStart, to: end, length: length)) { value in
                 AxisGridLine()
-                AxisValueLabel(format: .dateTime.hour().minute())
+                // Centred under the tick; date labels otherwise start at it and run off the end.
+                AxisValueLabel(anchor: .top) {
+                    if let date = value.as(Date.self) {
+                        Text((span == .twoMinutes ? Self.secondsFormatter : Self.minutesFormatter).string(from: date))
+                    }
+                }
             }
         }
         .frame(height: 320)
@@ -225,6 +237,38 @@ struct MetricChartView: View {
                 .chartScrollPosition(x: $scrollX)
         }
     }
+
+    /// Tick marks on round times, about four per visible span. Ticks near either end of the
+    /// domain are skipped: a scrollable chart clips at its domain, which cropped those labels.
+    private static func ticks(from start: Date, to end: Date, length: TimeInterval) -> [Date] {
+        let steps: [TimeInterval] = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600]
+        let step = steps.first { $0 >= length / 4 } ?? 21600
+        let margin = length * 0.12
+        var t = (start.timeIntervalSinceReferenceDate / step).rounded(.up) * step
+        var ticks: [Date] = []
+        while t <= end.timeIntervalSinceReferenceDate - margin {
+            if t >= start.timeIntervalSinceReferenceDate + margin / 2 { ticks.append(Date(timeIntervalSinceReferenceDate: t)) }
+            t += step
+        }
+        return ticks
+    }
+
+    /// "4:09:30" and "4:09": no AM/PM, which doesn't fit four labels across.
+    private static let secondsFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("jmmss")
+        f.dateFormat = f.dateFormat.replacingOccurrences(of: " a", with: "").replacingOccurrences(of: "a", with: "")
+        return f
+    }()
+    private static let minutesFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("jmm")
+        f.dateFormat = f.dateFormat.replacingOccurrences(of: " a", with: "").replacingOccurrences(of: "a", with: "")
+        return f
+    }()
+
+    /// Room past the newest point: 10% of the visible span.
+    private static func trailingPad(_ length: TimeInterval) -> TimeInterval { length * 0.1 }
 
     /// Buckets to at most `maxPoints`: mean of values, min of lows, max of highs.
     private static func downsample(_ raw: [SeriesStore.Point]) -> [SeriesStore.Point] {
