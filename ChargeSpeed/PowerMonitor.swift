@@ -22,6 +22,20 @@ final class PowerMonitor: ObservableObject {
     /// Plug, profile, thermal and display changes, oldest first (last 500).
     @Published private(set) var events: [ChargeEvent] = []
     @Published private(set) var ambient: Ambient?
+    /// Every profile the current adapter has reported since it was attached, oldest first.
+    /// Wired PD chargers advertise their menu up front; MagSafe and Qi only reveal theirs as
+    /// they step up, so this is the only way to see them.
+    @Published private(set) var seenProfiles: [SeenProfile] = []
+    private var seenProfilesAdapter: String?
+    private var lastProfileTick: Date?
+
+    struct SeenProfile: Identifiable {
+        let description: String
+        let firstSeen: Date
+        var lastSeen: Date
+        var duration: TimeInterval
+        var id: String { description }
+    }
     private var detector = EventDetector()
     private static let eventLimit = 500
 
@@ -245,6 +259,7 @@ final class PowerMonitor: ObservableObject {
         updateHold(snap)
         updateSession(snap)
         updatePeak(snap)
+        updateSeenProfiles(snap)
 
         let new = detector.detect(snap, ambient)
         if !new.isEmpty {
@@ -378,6 +393,7 @@ final class PowerMonitor: ObservableObject {
                 }
             }
             if isNew {
+                seenProfiles.removeAll()
                 peak = nil
                 recentSamples.removeAll()
                 history.removeAll()
@@ -410,6 +426,26 @@ final class PowerMonitor: ObservableObject {
 
     private func persistSession() {
         if let session { save(session, forKey: Self.sessionKey) }
+    }
+
+    /// Adds the adapter's current profile to `seenProfiles` and credits it with the time since
+    /// the last tick. A different adapter starts a fresh list.
+    private func updateSeenProfiles(_ snap: PowerSnapshot) {
+        defer { lastProfileTick = snap.date }
+        guard snap.externalConnected, let description = snap.adapterProfileDescription else { return }
+        if let id = snap.adapterIdentity, id != seenProfilesAdapter {
+            if seenProfilesAdapter != nil { seenProfiles.removeAll() }
+            seenProfilesAdapter = id
+        }
+        // Gaps (app suspended, replay seeks) don't count as time in the profile.
+        let elapsed = lastProfileTick.map { min(max(snap.date.timeIntervalSince($0), 0), 5) } ?? 0
+        if let i = seenProfiles.firstIndex(where: { $0.description == description }) {
+            seenProfiles[i].lastSeen = snap.date
+            seenProfiles[i].duration += elapsed
+        } else {
+            seenProfiles.append(SeenProfile(description: description, firstSeen: snap.date,
+                                            lastSeen: snap.date, duration: 0))
+        }
     }
 
     /// Records the peak of the headline number (charger input on USB-C, battery input on

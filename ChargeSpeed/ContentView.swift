@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var rateProbe = SensorRateProbe()
     @State private var showRateReport = false
     @State private var showProfiles = false
+    @State private var showSeenProfiles = false
     @State private var showSensors = false
     @State private var showPowerd = false
     @State private var showAdapterRaw = false
@@ -376,6 +377,18 @@ struct ContentView: View {
                             row((p.index == snap.adapterActiveProfile ? "▶ " : "") + "Profile \(p.index)",
                                 Formatting.voltsAmps(voltage_mV: p.voltage_mV, current_mA: p.current_mA)
                                     + String(format: " = %.0f W", Double(p.voltage_mV) * Double(p.current_mA) / 1_000_000))
+                        }
+                    }
+                }
+                // Wireless chargers have no advertised menu; list what they've reported so far.
+                if profiles.count <= 1, !monitor.seenProfiles.isEmpty {
+                    let current = snap.adapterProfileDescription
+                    DisclosureGroup("Profiles seen (\(monitor.seenProfiles.count))", isExpanded: $showSeenProfiles) {
+                        ForEach(monitor.seenProfiles) { p in
+                            row((p.description == current ? "▶ " : "") + p.description,
+                                Duration.seconds(p.duration).formatted(.units(allowed: [.hours, .minutes, .seconds],
+                                                                               width: .narrow, maximumUnitCount: 2))
+                                    + " · " + p.firstSeen.formatted(date: .omitted, time: .standard))
                         }
                     }
                 }
