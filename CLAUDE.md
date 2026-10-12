@@ -5,7 +5,7 @@ Personal dev-only iPhone app: live charge power in watts from private APIs. Not 
 ## Build and deploy
 
 - XcodeGen project: `xcodegen generate` after editing `project.yml` or adding files.
-- Scheme `ChargeSpeed`, bundle id `com.gregwilson.chargespeed`, team in `project.yml`.
+- Scheme `ChargeSpeed`, bundle id `com.gregwilson.chargespeed`. Team: `Signing.xcconfig` (default), overridden by gitignored `Local.xcconfig` (`DEVELOPMENT_TEAM = …`). Don't set the team in `project.yml` or Xcode; `xcodegen generate` would reset it.
 - Runs on iPhone 17 Pro Max (iOS 26) and iPhone 18 Pro Max (iOS 27) with the same sensor names.
   Also runs on iPhone 14 Pro (iPhone15,2, iOS 27): 38 HID sensors instead of ~75, plus `Charger QQ0u`/`WQ0u`; headline `VQ0u × IQ0u` still matches, but `Charger VQ0l` is not the battery (~3.25 V), `PMU VP0u` is.
 - `DeviceProfile.swift`: per-model battery Wh and battery-voltage sensor order (14 Pro: 12.38 Wh, `VP0u` first). Unknown models (incl. 18 Pro Max) get the 17 Pro Max values.

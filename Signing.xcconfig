@@ -1,0 +1,6 @@
+// Signing team for the ChargeSpeed target. To build with your own team, create
+// Local.xcconfig (gitignored) next to this file containing e.g.
+//   DEVELOPMENT_TEAM = ABCDE12345
+// It survives `xcodegen generate`, unlike a team picked in Xcode.
+DEVELOPMENT_TEAM = MD8FHBP25M
+#include? "Local.xcconfig"

@@ -13,6 +13,10 @@ targets:
     platform: iOS
     sources:
       - ChargeSpeed
+    # DEVELOPMENT_TEAM lives here so a gitignored Local.xcconfig can override it.
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -20,7 +24,6 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: MD8FHBP25M
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
