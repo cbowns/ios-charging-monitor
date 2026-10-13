@@ -1,4 +1,5 @@
 import SwiftUI
+import notify
 
 /// Measures each sensor's real update rate, to tune `SensorSampler`. Runs on the sampler's
 /// queue with sampling held off (about 35 s):
@@ -116,6 +117,18 @@ final class SensorRateProbe: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// The system's thermal pressure level from the `com.apple.system.thermalpressurelevel`
+    /// notification, which `ProcessInfo.thermalState` summarises into four steps. On macOS the
+    /// levels are 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping; nil if unreadable.
+    nonisolated static func thermalPressureLevel() -> UInt64? {
+        var token: Int32 = 0
+        guard notify_register_check("com.apple.system.thermalpressurelevel", &token) == NOTIFY_STATUS_OK else { return nil }
+        defer { notify_cancel(token) }
+        var state: UInt64 = 0
+        guard notify_get_state(token, &state) == NOTIFY_STATUS_OK else { return nil }
+        return state
+    }
+
     nonisolated private static func save(_ text: String) {
         let name = "sensor-rates-" + RecordingFormat.fileNameFormatter.string(from: .now) + ".txt"
         try? text.write(to: URL.documentsDirectory.appending(path: name), atomically: true, encoding: .utf8)
@@ -124,6 +137,7 @@ final class SensorRateProbe: ObservableObject {
 
 struct SensorRateReportView: View {
     let report: String
+    var title = "Sensor rates"
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -135,7 +149,7 @@ struct SensorRateReportView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
-            .navigationTitle("Sensor rates")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }
