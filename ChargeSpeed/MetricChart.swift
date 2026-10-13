@@ -1,9 +1,9 @@
 import SwiftUI
 import Charts
 
-/// A value the Charging rows can chart over time.
+/// A value the Charging and Thermals rows can chart over time.
 enum ChartMetric: String, Identifiable, CaseIterable {
-    case batteryWatts, batteryVoltage
+    case batteryWatts, batteryVoltage, batteryTemp, socTemp
 
     var id: String { rawValue }
 
@@ -11,6 +11,8 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         switch self {
         case .batteryWatts: return "Into battery"
         case .batteryVoltage: return "Battery voltage"
+        case .batteryTemp: return "Battery temperature"
+        case .socTemp: return "SoC (hottest die)"
         }
     }
 
@@ -18,6 +20,7 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         switch self {
         case .batteryWatts: return "W"
         case .batteryVoltage: return "V"
+        case .batteryTemp, .socTemp: return "°C"
         }
     }
 
@@ -25,11 +28,21 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         switch self {
         case .batteryWatts: return "%.2f W"
         case .batteryVoltage: return "%.3f V"
+        case .batteryTemp, .socTemp: return "%.1f °C"
         }
     }
 
-    /// Watts chart from zero so charge and drain read at a glance; voltage zooms to its range.
+    /// Watts chart from zero so charge and drain read at a glance; the rest zoom to their range.
     var includesZero: Bool { self == .batteryWatts }
+
+    /// The smallest y range to show, so sensor noise (0.04 °C, a few mV) doesn't fill the chart.
+    var minimumYSpan: Double {
+        switch self {
+        case .batteryWatts: return 1
+        case .batteryVoltage: return 0.05
+        case .batteryTemp, .socTemp: return 2
+        }
+    }
 
     /// The value with its low/high over the sampling window when the sensors were fast-sampled.
     func point(_ snap: PowerSnapshot) -> SeriesStore.Point? {
@@ -46,11 +59,16 @@ enum ChartMetric: String, Identifiable, CaseIterable {
             guard let v = snap.batteryVoltage else { return nil }
             let spread = snap.voltage_mV == nil ? snap.sensorBatteryVoltageReading?.spread : nil
             return .init(date: snap.date, value: v, low: spread?.min ?? v, high: spread?.max ?? v)
+        case .batteryTemp:
+            return snap.batteryTemperatureC.map { .init(date: snap.date, value: $0, low: $0, high: $0) }
+        case .socTemp:
+            return snap.socMaxTemperatureC.map { .init(date: snap.date, value: $0, low: $0, high: $0) }
         }
     }
 }
 
-/// Per-tick values for the charts, since launch (or since the start of a replay), capped at 12 h.
+/// Per-tick values for the charts: the last 15 minutes (the longest span), since launch or
+/// since the start of a replay. Longer history lives in the recordings.
 struct SeriesStore {
     struct Point {
         let date: Date
@@ -59,69 +77,52 @@ struct SeriesStore {
         let high: Double
     }
 
-    private static let limit = 12 * 3600
+    static let keep: TimeInterval = 15 * 60
     private(set) var points: [ChartMetric: [Point]] = [:]
 
     mutating func append(_ snap: PowerSnapshot) {
+        let cutoff = snap.date.addingTimeInterval(-Self.keep - 60)
         for metric in ChartMetric.allCases {
             guard let p = metric.point(snap) else { continue }
             points[metric, default: []].append(p)
-            if points[metric]!.count > Self.limit + 600 { points[metric]!.removeFirst(600) }
+            // Trim a minute at a time rather than every tick.
+            if let first = points[metric]?.first, first.date < cutoff {
+                points[metric]!.removeAll { $0.date < snap.date.addingTimeInterval(-Self.keep) }
+            }
         }
     }
 }
 
+/// The last 2, 5 or 15 minutes of one metric. The window is fixed to the newest data and
+/// doesn't scroll: a scrollable chart re-rendered every mark on each scroll frame and was choppy.
 struct MetricChartView: View {
     @ObservedObject var monitor: PowerMonitor
     let metric: ChartMetric
     @Environment(\.dismiss) private var dismiss
 
     enum Span: Double, CaseIterable, Identifiable {
-        case twoMinutes = 120, tenMinutes = 600, hour = 3600, all = 0
+        case two = 120, five = 300, fifteen = 900
         var id: Double { rawValue }
-        var label: String {
-            switch self {
-            case .twoMinutes: return "2m"
-            case .tenMinutes: return "10m"
-            case .hour: return "1h"
-            case .all: return "All"
-            }
-        }
+        var label: String { "\(Int(rawValue / 60))m" }
     }
 
-    @State private var span: Span = .tenMinutes
-    @State private var scrollX: Date
-
-    /// The scroll position has to start at the latest data; setting it in onAppear is ignored.
-    init(monitor: PowerMonitor, metric: ChartMetric) {
-        self.monitor = monitor
-        self.metric = metric
-        let last = monitor.series.points[metric]?.last?.date ?? .now
-        let length = Span.tenMinutes.rawValue
-        _scrollX = State(initialValue: last.addingTimeInterval(Self.trailingPad(length) - length))
-    }
-    @State private var followLive = true
+    @State private var span: Span = .five
     @State private var selected: Date?
 
-    /// Kinds worth marking on a battery chart; brightness and appearance would be clutter.
+    /// Kinds worth marking on these charts; brightness and appearance would be clutter.
     private static let markedEvents: Set<ChargeEvent.Kind> = [.plugIn, .unplug, .adapter, .profile, .status, .thermal, .batteryTemp]
-    /// Swift Charts draws every mark in a scrollable chart, so long series are bucketed.
-    private static let maxPoints = 3000
 
     var body: some View {
-        let raw = monitor.series.points[metric] ?? []
-        let points = Self.downsample(raw)
-        let first = raw.first?.date ?? .now
-        let last = raw.last?.date ?? .now
-        let length = span == .all ? max(last.timeIntervalSince(first), 60) : span.rawValue
-        // The x axis runs a little past the newest point; a scrollable chart's content ends at
-        // its domain, and a time label centred on a tick near the end was cropped.
-        let end = last.addingTimeInterval(Self.trailingPad(length))
-        let events = monitor.events.filter { Self.markedEvents.contains($0.kind) && $0.date >= first && $0.date <= last }
+        let all = monitor.series.points[metric] ?? []
+        let last = all.last?.date ?? .now
+        let start = last.addingTimeInterval(-span.rawValue)
+        let points = all.filter { $0.date >= start }
+        let end = last.addingTimeInterval(span.rawValue * 0.05)
+        let events = monitor.events.filter { Self.markedEvents.contains($0.kind) && $0.date >= start && $0.date <= last }
 
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                header(raw)
+                header(points)
                 Picker("Span", selection: $span) {
                     ForEach(Span.allCases) { Text($0.label).tag($0) }
                 }
@@ -131,17 +132,9 @@ struct MetricChartView: View {
                     ContentUnavailableView("Not enough data yet", systemImage: "chart.xyaxis.line",
                                            description: Text("Values are kept from app launch, one per second."))
                 } else {
-                    chart(points, events: events, first: first, end: end, length: length)
-                }
-                if !followLive {
-                    Button {
-                        followLive = true
-                        scrollX = end.addingTimeInterval(-length)
-                    } label: {
-                        Label("Now", systemImage: "arrow.right.to.line")
-                    }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    MetricChartPlot(metric: metric, points: points, events: events, start: start, end: end,
+                                    showSeconds: span == .two, selected: $selected)
+                        .frame(height: 320)
                 }
                 Spacer(minLength: 0)
             }
@@ -151,22 +144,11 @@ struct MetricChartView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
-            .onChange(of: span) { _, _ in
-                followLive = true
-                scrollX = end.addingTimeInterval(-length)
-            }
-            .onChange(of: last) { _, _ in
-                if followLive { scrollX = end.addingTimeInterval(-length) }
-            }
-            .onChange(of: scrollX) { _, x in
-                // Scrolled back by hand: stop following until "Now".
-                if x.addingTimeInterval(length) < end.addingTimeInterval(-3) { followLive = false }
-            }
         }
     }
 
-    private func header(_ raw: [SeriesStore.Point]) -> some View {
-        let shown = selected.flatMap { s in raw.min { abs($0.date.timeIntervalSince(s)) < abs($1.date.timeIntervalSince(s)) } } ?? raw.last
+    private func header(_ points: [SeriesStore.Point]) -> some View {
+        let shown = selected.flatMap { s in points.min { abs($0.date.timeIntervalSince(s)) < abs($1.date.timeIntervalSince(s)) } } ?? points.last
         return VStack(alignment: .leading, spacing: 2) {
             Text(shown.map { String(format: metric.format, $0.value) } ?? "—")
                 .font(.system(size: 34, weight: .bold, design: .rounded))
@@ -174,28 +156,39 @@ struct MetricChartView: View {
             Text(shown.map { ($0.date.formatted(date: .omitted, time: .standard)) + (selected == nil ? " · latest" : "") } ?? " ")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let lo = raw.map(\.value).min(), let hi = raw.map(\.value).max() {
-                Text("Since \(raw.first!.date.formatted(date: .omitted, time: .shortened)): "
-                     + String(format: metric.format, lo) + " – " + String(format: metric.format, hi))
+            if let lo = points.map(\.value).min(), let hi = points.map(\.value).max() {
+                Text("Last \(span.label): " + String(format: metric.format, lo) + " – " + String(format: metric.format, hi))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func chart(_ points: [SeriesStore.Point], events: [ChargeEvent], first: Date, end: Date, length: TimeInterval) -> some View {
-        // At least one full span wide, so a short history sits at the right (live) edge.
-        let domainStart = min(first, end.addingTimeInterval(-length))
-        let chart = Chart {
-            ForEach(points, id: \.date) { p in
-                if p.high > p.low {
+/// The plot alone, so the header and picker don't rebuild it.
+private struct MetricChartPlot: View {
+    let metric: ChartMetric
+    let points: [SeriesStore.Point]
+    let events: [ChargeEvent]
+    let start: Date
+    let end: Date
+    let showSeconds: Bool
+    @Binding var selected: Date?
+
+    var body: some View {
+        // One band for the whole series when any sample has a spread; per-point conditionals
+        // break the area into disjoint pieces.
+        let hasBand = points.contains { $0.high > $0.low }
+        Chart {
+            if hasBand {
+                ForEach(points, id: \.date) { p in
                     AreaMark(x: .value("Time", p.date), yStart: .value("Low", p.low), yEnd: .value("High", p.high))
                         .foregroundStyle(Color.accentColor.opacity(0.2))
                 }
+            }
+            ForEach(points, id: \.date) { p in
                 LineMark(x: .value("Time", p.date), y: .value(metric.unit, p.value))
                     .foregroundStyle(Color.accentColor)
-                    .interpolationMethod(.linear)
             }
             ForEach(events) { e in
                 RuleMark(x: .value("Event", e.date))
@@ -212,42 +205,46 @@ struct MetricChartView: View {
                     .foregroundStyle(Color.primary.opacity(0.4))
             }
         }
-        .chartXScale(domain: domainStart...end)
-        .chartYScale(domain: .automatic(includesZero: metric.includesZero))
+        .chartXScale(domain: start...end)
+        .chartYScale(domain: yDomain)
         .chartXSelection(value: $selected)
         .chartXAxis {
-            AxisMarks(values: Self.ticks(from: domainStart, to: end, length: length)) { value in
+            AxisMarks(values: Self.ticks(from: start, to: end)) { value in
                 AxisGridLine()
                 // Centred under the tick; date labels otherwise start at it and run off the end.
                 AxisValueLabel(anchor: .top) {
                     if let date = value.as(Date.self) {
-                        Text((span == .twoMinutes ? Self.secondsFormatter : Self.minutesFormatter).string(from: date))
+                        Text((showSeconds ? Self.secondsFormatter : Self.minutesFormatter).string(from: date))
                     }
                 }
             }
         }
-        .frame(height: 320)
-
-        if span == .all {
-            chart
-        } else {
-            chart
-                .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: length)
-                .chartScrollPosition(x: $scrollX)
-        }
     }
 
-    /// Tick marks on round times, about four per visible span. Ticks near either end of the
-    /// domain are skipped: a scrollable chart clips at its domain, which cropped those labels.
-    private static func ticks(from start: Date, to end: Date, length: TimeInterval) -> [Date] {
-        let steps: [TimeInterval] = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600]
-        let step = steps.first { $0 >= length / 4 } ?? 21600
-        let margin = length * 0.12
+    /// The data's range (plus zero for watts), widened to `minimumYSpan` around its middle.
+    private var yDomain: ClosedRange<Double> {
+        var lo = points.map(\.low).min() ?? 0
+        var hi = points.map(\.high).max() ?? 0
+        if metric.includesZero { lo = min(lo, 0); hi = max(hi, 0) }
+        if hi - lo < metric.minimumYSpan {
+            let mid = (lo + hi) / 2
+            lo = metric.includesZero && lo >= 0 ? 0 : mid - metric.minimumYSpan / 2
+            hi = lo + metric.minimumYSpan
+        }
+        return lo...hi
+    }
+
+    /// Ticks on round times, about four across, skipping any too close to either edge for a
+    /// centred label to fit.
+    private static func ticks(from start: Date, to end: Date) -> [Date] {
+        let length = end.timeIntervalSince(start)
+        let steps: [TimeInterval] = [15, 30, 60, 120, 300, 600]
+        let step = steps.first { $0 >= length / 4 } ?? 600
+        let margin = length * 0.1
         var t = (start.timeIntervalSinceReferenceDate / step).rounded(.up) * step
         var ticks: [Date] = []
         while t <= end.timeIntervalSinceReferenceDate - margin {
-            if t >= start.timeIntervalSinceReferenceDate + margin / 2 { ticks.append(Date(timeIntervalSinceReferenceDate: t)) }
+            if t >= start.timeIntervalSinceReferenceDate + margin { ticks.append(Date(timeIntervalSinceReferenceDate: t)) }
             t += step
         }
         return ticks
@@ -266,20 +263,4 @@ struct MetricChartView: View {
         f.dateFormat = f.dateFormat.replacingOccurrences(of: " a", with: "").replacingOccurrences(of: "a", with: "")
         return f
     }()
-
-    /// Room past the newest point: 10% of the visible span.
-    private static func trailingPad(_ length: TimeInterval) -> TimeInterval { length * 0.1 }
-
-    /// Buckets to at most `maxPoints`: mean of values, min of lows, max of highs.
-    private static func downsample(_ raw: [SeriesStore.Point]) -> [SeriesStore.Point] {
-        guard raw.count > maxPoints else { return raw }
-        let size = Int((Double(raw.count) / Double(maxPoints)).rounded(.up))
-        return stride(from: 0, to: raw.count, by: size).map { start in
-            let bucket = raw[start..<min(start + size, raw.count)]
-            return .init(date: bucket[bucket.startIndex].date,
-                         value: bucket.reduce(0) { $0 + $1.value } / Double(bucket.count),
-                         low: bucket.map(\.low).min()!,
-                         high: bucket.map(\.high).max()!)
-        }
-    }
 }

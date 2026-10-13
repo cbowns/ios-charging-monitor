@@ -303,12 +303,12 @@ struct ContentView: View {
             Section("Thermals") {
                 row("Thermal state", monitor.thermalState.name.capitalized + (throttling ? " · throttling" : ""),
                     color: throttling ? .red : (monitor.thermalState == .fair ? .orange : nil))
-                row("Battery", snap.batteryTemperatureC.map { Formatting.temperature($0) },
-                    color: snap.batteryTemperatureC.map { $0 >= Self.batteryHotC ? .red : ($0 >= Self.batteryWarmC ? .orange : nil) } ?? nil)
+                chartRow("Battery", snap.batteryTemperatureC.map { Formatting.temperature($0) }, metric: .batteryTemp,
+                         color: snap.batteryTemperatureC.map { $0 >= Self.batteryHotC ? .red : ($0 >= Self.batteryWarmC ? .orange : nil) } ?? nil)
                 row("Charger junction", snap.chargerJunctionTemperatureC.map { Formatting.temperature($0) },
                     color: throttling ? .red : nil)
-                row("SoC (hottest die)", snap.socMaxTemperatureC.map { Formatting.temperature($0) },
-                    color: throttling ? .red : nil)
+                chartRow("SoC (hottest die)", snap.socMaxTemperatureC.map { Formatting.temperature($0) }, metric: .socTemp,
+                         color: throttling ? .red : nil)
             }
         }
     }
@@ -373,7 +373,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func adapterSection(_ snap: PowerSnapshot) -> some View {
-        if snap.adapter != nil {
+        if snap.adapter != nil, !snap.adapterIsPlaceholder {
             Section("Adapter") {
                 row("Name", snap.adapterName ?? snap.adapterDescription)
                 row(snap.adapterIsWireless ? "Reported profile" : "Negotiated", snap.adapterNegotiated.map {
@@ -501,7 +501,7 @@ struct ContentView: View {
 
     /// A row that opens a chart of `metric` when tapped.
     @ViewBuilder
-    private func chartRow(_ label: String, _ value: String?, metric: ChartMetric) -> some View {
+    private func chartRow(_ label: String, _ value: String?, metric: ChartMetric, color: Color? = nil) -> some View {
         if let value {
             Button {
                 chartMetric = metric
@@ -510,7 +510,8 @@ struct ContentView: View {
                     Text(label)
                     Spacer()
                     Text(value)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(color.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
+                        .fontWeight(color == nil ? .regular : .semibold)
                         .monospacedDigit()
                     Image(systemName: "chart.xyaxis.line")
                         .font(.caption)
