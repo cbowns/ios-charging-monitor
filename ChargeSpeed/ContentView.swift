@@ -368,6 +368,7 @@ struct ContentView: View {
         case .unplug: return .orange
         case .thermal, .batteryTemp: return .red
         case .brightness, .appearance: return .yellow
+        case .sun: return .orange
         default: return .accentColor
         }
     }

@@ -120,7 +120,7 @@ struct MetricChartView: View {
     @State private var selected: Date?
 
     /// Kinds worth marking on these charts; brightness and appearance would be clutter.
-    private static let markedEvents: Set<ChargeEvent.Kind> = [.plugIn, .unplug, .adapter, .profile, .status, .thermal, .batteryTemp]
+    private static let markedEvents: Set<ChargeEvent.Kind> = [.plugIn, .unplug, .adapter, .profile, .status, .thermal, .batteryTemp, .sun]
 
     var body: some View {
         let all = monitor.series.points[metric] ?? []

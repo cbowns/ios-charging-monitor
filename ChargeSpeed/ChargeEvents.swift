@@ -19,7 +19,7 @@ struct Ambient: Equatable {
 /// Something worth marking on a timeline: plug-in, a new charging profile, a thermal change.
 struct ChargeEvent: Identifiable {
     enum Kind: String, CaseIterable {
-        case plugIn, unplug, adapter, profile, status, thermal, batteryTemp, brightness, appearance
+        case plugIn, unplug, adapter, profile, status, thermal, batteryTemp, brightness, appearance, sun
 
         var symbol: String {
             switch self {
@@ -30,6 +30,7 @@ struct ChargeEvent: Identifiable {
             case .status: return "battery.100percent.bolt"
             case .thermal, .batteryTemp: return "thermometer.high"
             case .brightness: return "sun.max"
+            case .sun: return "sun.max.fill"
             case .appearance: return "circle.lefthalf.filled"
             }
         }
@@ -50,6 +51,10 @@ struct EventDetector {
     private static let tempHysteresis = 0.3
     private static let settle: TimeInterval = 5
     private static let brightnessStep = 0.1
+    /// Direct sun is ~30,000–100,000 lux and shade a few thousand; an LED flashlight up close
+    /// read 14,564. Entering needs 20,000 lux and leaving needs under 10,000, each held for `settle`.
+    private static let sunEnterLux = 20_000.0
+    private static let sunExitLux = 10_000.0
 
     private var started = false
     private var pluggedIn = false
@@ -69,6 +74,8 @@ struct EventDetector {
     private var brightness: Double?
     private var brightnessMovedAt: Date?
     private var isDark: Bool?
+    private var inSun = false
+    private var sunChangeSince: Date?
 
     mutating func detect(_ snap: PowerSnapshot, _ ambient: Ambient) -> [ChargeEvent] {
         let now = snap.date
@@ -89,6 +96,7 @@ struct EventDetector {
             tempBand = snap.batteryTemperatureC.map(Self.band) ?? 0
             brightness = ambient.brightness
             isDark = ambient.isDark
+            inSun = (snap.ambientLux ?? 0) >= Self.sunEnterLux
             return []
         }
 
@@ -195,6 +203,21 @@ struct EventDetector {
                 }
             } else {
                 brightness = b
+            }
+        }
+
+        if let lux = snap.ambientLux {
+            let crossing = inSun ? lux < Self.sunExitLux : lux >= Self.sunEnterLux
+            if !crossing {
+                sunChangeSince = nil
+            } else if let since = sunChangeSince {
+                if now.timeIntervalSince(since) >= Self.settle {
+                    inSun.toggle()
+                    emit(.sun, (inSun ? "Direct sun · " : "Out of direct sun · ") + "\(Int(lux).formatted()) lux", at: since)
+                    sunChangeSince = nil
+                }
+            } else {
+                sunChangeSince = now
             }
         }
 
