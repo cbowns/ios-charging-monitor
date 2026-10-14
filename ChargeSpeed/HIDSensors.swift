@@ -35,6 +35,7 @@ final class HIDSensors {
             case 3: return String(format: "%.3f V", value)
             case 4: return String(format: "%.0f lux", value)
             case 5: return Formatting.temperature(value)
+            case HIDSensors.colorTemperatureUsage: return String(format: "%.0f K", value)
             default: return String(format: "%.3f", value)
             }
         }
@@ -51,12 +52,16 @@ final class HIDSensors {
     private static let powerEventType: Int64 = 25        // kIOHIDEventTypePower
     private static let temperatureEventType: Int64 = 15  // kIOHIDEventTypeTemperature
     private static let ambientLightEventType: Int64 = 12 // kIOHIDEventTypeAmbientLightSensor
+    /// Not a HID usage: tags the colour-temperature value read from the light sensor's event.
+    static let colorTemperatureUsage = 0x10004
 
     private struct Service {
         let ref: CFTypeRef
         let name: String
         let usage: Int
         let eventType: Int64
+        /// Which field of the event to read; 0 is each event type's primary value.
+        var field: Int32 = 0
     }
 
     private let client: CFTypeRef
@@ -99,9 +104,15 @@ final class HIDSensors {
         found += discover(matching: ["PrimaryUsagePage": 0xff08], eventType: Self.powerEventType)
         // Temperature sensors: usage page 0xff00, usage 5.
         found += discover(matching: ["PrimaryUsagePage": 0xff00, "PrimaryUsage": 5], eventType: Self.temperatureEventType)
-        // Ambient light sensor: usage page 0xff00, usage 4; event field 0 is the level in lux.
-        // Unverified on iOS: if the sandbox refuses it, it just never returns a reading.
-        found += discover(matching: ["PrimaryUsagePage": 0xff00, "PrimaryUsage": 4], eventType: Self.ambientLightEventType)
+        // Ambient light sensor "als": usage page 0xff00, usage 4. Its event (iPhone 14 Pro, iOS 27)
+        // carries lux in field 0, raw channels in 1-4, CIE XYZ in 7-9 (Y = lux), colour
+        // temperature in kelvin in 10, and lux again as a float in 11. Read lux and colour
+        // temperature as two catalog entries.
+        for als in discover(matching: ["PrimaryUsagePage": 0xff00, "PrimaryUsage": 4], eventType: Self.ambientLightEventType) {
+            found.append(als)
+            found.append(Service(ref: als.ref, name: als.name + " cct", usage: Self.colorTemperatureUsage,
+                                 eventType: als.eventType, field: 10))
+        }
         services = found
     }
 
@@ -184,8 +195,9 @@ final class HIDSensors {
             guard index < services.count else { return nil }
             let service = services[index]
             guard let event = copyEvent(service.ref, service.eventType, 0, 0)?.takeRetainedValue() else { return nil }
-            let value = getFloat(event, Int32(service.eventType << 16))
-            guard value.isFinite else { return nil }
+            let value = getFloat(event, Int32(service.eventType << 16) + service.field)
+            // A colour temperature of 0 means the sensor didn't report one.
+            guard value.isFinite, !(service.usage == Self.colorTemperatureUsage && value <= 0) else { return nil }
             return Reading(id: index, name: service.name, usage: service.usage, value: value)
         }
     }
