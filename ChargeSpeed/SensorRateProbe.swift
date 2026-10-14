@@ -124,7 +124,6 @@ final class SensorRateProbe: ObservableObject {
 
 struct SensorRateReportView: View {
     let report: String
-    var title = "Sensor rates"
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -136,7 +135,7 @@ struct SensorRateReportView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
-            .navigationTitle(title)
+            .navigationTitle("Sensor rates")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } }

@@ -10,7 +10,6 @@ struct ContentView: View {
     @State private var showAllEvents = false
     @StateObject private var rateProbe = SensorRateProbe()
     @State private var showRateReport = false
-    @State private var lightReport: String?
     @State private var showProfiles = false
     @State private var showSeenProfiles = false
     @State private var chartMetric: ChartMetric?
@@ -61,9 +60,6 @@ struct ContentView: View {
             }
             .sheet(item: $chartMetric) { metric in
                 MetricChartView(monitor: monitor, metric: metric)
-            }
-            .sheet(isPresented: Binding(get: { lightReport != nil }, set: { if !$0 { lightReport = nil } })) {
-                SensorRateReportView(report: lightReport ?? "", title: "Light & thermal probe")
             }
             .sheet(isPresented: $showRateReport) {
                 SensorRateReportView(report: rateProbe.report ?? "")
@@ -467,8 +463,6 @@ struct ContentView: View {
                 } else {
                     Button("Measure sensor update rates (~35 s)") { rateProbe.run(monitor: monitor) }
                         .font(.callout)
-                    Button("Probe light sensor & thermal pressure") { probeLight() }
-                        .font(.callout)
                 }
             }
             if !snap.sensors.isEmpty {
@@ -499,19 +493,6 @@ struct ContentView: View {
                     rawRow(key, snap.raw[key]!)
                 }
             }
-        }
-    }
-
-    /// Runs the ambient-light dump on the sampler queue (it owns the HID client) and adds the
-    /// thermal pressure level next to iOS's four-step thermal state.
-    private func probeLight() {
-        let state = monitor.thermalState.name
-        monitor.sampler?.exclusive { sensors, _, _ in
-            var text = sensors.probeAmbientLight()
-            let pressure = ThermalPressure.current()
-            text += "\n\nThermal state (ProcessInfo): \(state)"
-            text += "\nThermal pressure level (com.apple.system.thermalpressurelevel): " + (pressure.map(String.init) ?? "unreadable")
-            DispatchQueue.main.async { lightReport = text }
         }
     }
 
