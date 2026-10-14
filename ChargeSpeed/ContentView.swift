@@ -8,8 +8,6 @@ struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showRecordings = false
     @State private var showAllEvents = false
-    @StateObject private var rateProbe = SensorRateProbe()
-    @State private var showRateReport = false
     @State private var showProfiles = false
     @State private var showSeenProfiles = false
     @State private var chartMetric: ChartMetric?
@@ -60,12 +58,6 @@ struct ContentView: View {
             }
             .sheet(item: $chartMetric) { metric in
                 MetricChartView(monitor: monitor, metric: metric)
-            }
-            .sheet(isPresented: $showRateReport) {
-                SensorRateReportView(report: rateProbe.report ?? "")
-            }
-            .onChange(of: rateProbe.report) { _, report in
-                if report != nil { showRateReport = true }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -455,16 +447,6 @@ struct ContentView: View {
     @ViewBuilder
     private func rawSection(_ snap: PowerSnapshot) -> some View {
         Section("Raw data") {
-            if monitor.isLive, monitor.sampler != nil {
-                if let progress = rateProbe.progress {
-                    ProgressView(value: progress) {
-                        Text("Timing each sensor…").font(.callout)
-                    }
-                } else {
-                    Button("Measure sensor update rates (~35 s)") { rateProbe.run(monitor: monitor) }
-                        .font(.callout)
-                }
-            }
             if !snap.sensors.isEmpty {
                 DisclosureGroup("All sensors (\(snap.sensors.count))", isExpanded: $showSensors) {
                     ForEach(snap.sensors.sorted { $0.name < $1.name }) { r in

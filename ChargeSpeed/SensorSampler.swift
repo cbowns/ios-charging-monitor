@@ -19,12 +19,6 @@ final class SensorSampler: @unchecked Sendable {
         let readings: [HIDSensors.Reading]
     }
 
-    struct TickStats {
-        let ticks: Int
-        let medianMs: Double
-        let maxMs: Double
-    }
-
     private let queue = DispatchQueue(label: "com.gregwilson.chargespeed.sensors", qos: .userInitiated)
 
     // Queue-confined.
@@ -43,7 +37,6 @@ final class SensorSampler: @unchecked Sendable {
     private var accumulators: [Int: Accumulator] = [:]
     private var lastFast: [Int: HIDSensors.Reading] = [:]
     private var latestSlow: [Int: HIDSensors.Reading] = [:]
-    private var tickDurations: [TimeInterval] = []
 
     private struct Accumulator {
         let template: HIDSensors.Reading
@@ -58,8 +51,7 @@ final class SensorSampler: @unchecked Sendable {
     }
 
     /// Starts sampling. The very first call reads every sensor synchronously (one-time
-    /// ~40–80 ms) so the first window isn't empty; later calls don't block, since a probe
-    /// may be holding the queue.
+    /// ~40–80 ms) so the first window isn't empty; later calls just schedule the timer.
     func start() {
         let setup = { [self] in
             guard timer == nil else { return }
@@ -106,24 +98,6 @@ final class SensorSampler: @unchecked Sendable {
         }
     }
 
-    /// Median and max duration of the last ~100 ticks.
-    func tickStats() -> TickStats {
-        let durations = lock.withLock { tickDurations }.sorted()
-        return TickStats(ticks: durations.count,
-                         medianMs: (durations.isEmpty ? 0 : durations[durations.count / 2]) * 1000,
-                         maxMs: (durations.last ?? 0) * 1000)
-    }
-
-    /// Runs `work` on the sampler queue with ticks held off until it returns; for probes that
-    /// need the sensors to themselves. `work` gets the catalog and fast-sensor ids.
-    func exclusive(_ work: @escaping (HIDSensors, [HIDSensors.ServiceInfo], [Int]) -> Void) {
-        queue.async { [self] in
-            timer?.suspend()
-            work(sensors, sensors.catalog, fastIDs)
-            timer?.resume()
-        }
-    }
-
     private func tick() {
         let started = Date()
         if started.timeIntervalSince(lastRescan) >= Self.rescanInterval { rescan() }
@@ -138,7 +112,6 @@ final class SensorSampler: @unchecked Sendable {
             }
         }
         let slow = sensors.read(slice)
-        let duration = Date().timeIntervalSince(started)
 
         lock.withLock {
             for r in fast {
@@ -150,8 +123,6 @@ final class SensorSampler: @unchecked Sendable {
                 accumulators[r.id] = acc
             }
             for r in slow { latestSlow[r.id] = r }
-            tickDurations.append(duration)
-            if tickDurations.count > 100 { tickDurations.removeFirst(tickDurations.count - 100) }
         }
     }
 
