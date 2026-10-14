@@ -1,5 +1,4 @@
 import SwiftUI
-import notify
 
 /// Measures each sensor's real update rate, to tune `SensorSampler`. Runs on the sampler's
 /// queue with sampling held off (about 35 s):
@@ -115,18 +114,6 @@ final class SensorRateProbe: ObservableObject {
             progress(0.05 + 0.95 * Double(n + 1) / Double(targets.count))
         }
         return lines.joined(separator: "\n")
-    }
-
-    /// The system's thermal pressure level from the `com.apple.system.thermalpressurelevel`
-    /// notification, which `ProcessInfo.thermalState` summarises into four steps. On macOS the
-    /// levels are 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping; nil if unreadable.
-    nonisolated static func thermalPressureLevel() -> UInt64? {
-        var token: Int32 = 0
-        guard notify_register_check("com.apple.system.thermalpressurelevel", &token) == NOTIFY_STATUS_OK else { return nil }
-        defer { notify_cancel(token) }
-        var state: UInt64 = 0
-        guard notify_get_state(token, &state) == NOTIFY_STATUS_OK else { return nil }
-        return state
     }
 
     nonisolated private static func save(_ text: String) {

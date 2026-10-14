@@ -284,7 +284,8 @@ final class PowerMonitor: ObservableObject {
         return Ambient(thermalState: ProcessInfo.processInfo.thermalState.rawValue,
                        brightness: brightness,
                        isDark: scene.map { $0.traitCollection.userInterfaceStyle == .dark },
-                       appState: UIApplication.shared.applicationState.rawValue)
+                       appState: UIApplication.shared.applicationState.rawValue,
+                       thermalPressure: ThermalPressure.current())
     }
 
     private func observeBrightness() {
@@ -328,7 +329,7 @@ final class PowerMonitor: ObservableObject {
 
     func rawDump() -> String {
         guard let snap = snapshot else { return "" }
-        var text = "IOPMPowerSource:\n" + dump(snap.raw)
+        var text = "ChargeSpeed \(BuildInfo.summary)\n\nIOPMPowerSource:\n" + dump(snap.raw)
         if let cs = snap.chargeStatus { text += "\n\nChargeStatus:\n" + dump(cs) }
         if let sc = smartCharge {
             text += "\n\nSmartCharge: obc=\(sc.obcEnabled) mcl=\(sc.mclEnabled) limit=\(sc.mclLimit) deoc=\(sc.deocEnabled) engaged=\(sc.obcEngaged) engagedLimit=\(sc.engagedChargeLimit) ui=\(sc.uiState) errors=\(sc.callErrors)"

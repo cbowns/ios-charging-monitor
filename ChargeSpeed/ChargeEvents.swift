@@ -10,6 +10,8 @@ struct Ambient: Equatable {
     var isDark: Bool?
     /// `UIApplication.State.rawValue`: 0 active, 1 inactive, 2 background.
     var appState: Int?
+    /// `ThermalPressure` level: 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping.
+    var thermalPressure: Int?
 
     var thermal: ProcessInfo.ThermalState { ProcessInfo.ThermalState(rawValue: thermalState) ?? .nominal }
 }
@@ -62,6 +64,7 @@ struct EventDetector {
     private var pendingPlugIn: Date?
     private var pendingStatus: (text: String, since: Date)?
     private var thermalState = 0
+    private var thermalPressure: Int?
     private var tempBand = 0
     private var brightness: Double?
     private var brightnessMovedAt: Date?
@@ -82,6 +85,7 @@ struct EventDetector {
             profileText = snap.externalConnected ? snap.adapterProfileDescription(padded: true) : nil
             status = snap.statusText
             thermalState = ambient.thermalState
+            thermalPressure = ambient.thermalPressure
             tempBand = snap.batteryTemperatureC.map(Self.band) ?? 0
             brightness = ambient.brightness
             isDark = ambient.isDark
@@ -149,6 +153,12 @@ struct EventDetector {
         if ambient.thermalState != thermalState {
             emit(.thermal, "Thermal state \(ProcessInfo.ThermalState(rawValue: thermalState)?.name ?? "?") → \(ambient.thermal.name)")
             thermalState = ambient.thermalState
+        }
+        if let p = ambient.thermalPressure, p != thermalPressure {
+            if let old = thermalPressure {
+                emit(.thermal, "Thermal pressure \(ThermalPressure.name(old)) → \(ThermalPressure.name(p))")
+            }
+            thermalPressure = p
         }
 
         if let t = snap.batteryTemperatureC {

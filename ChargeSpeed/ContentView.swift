@@ -41,6 +41,13 @@ struct ContentView: View {
                     chargerSection(snap)
                     rawSection(snap)
                 }
+                Section {
+                } footer: {
+                    Text("ChargeSpeed " + BuildInfo.summary)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .frame(maxWidth: .infinity)
+                }
             }
             .listSectionSpacing(.compact)
             .environment(\.defaultMinListRowHeight, 34)
@@ -307,6 +314,10 @@ struct ContentView: View {
             Section("Thermals") {
                 row("Thermal state", monitor.thermalState.name.capitalized + (throttling ? " · throttling" : ""),
                     color: throttling ? .red : (monitor.thermalState == .fair ? .orange : nil))
+                if let p = monitor.ambient?.thermalPressure {
+                    row("Thermal pressure", "\(ThermalPressure.name(p).capitalized) (\(p))",
+                        color: p >= 2 ? .red : (p == 1 ? .orange : nil))
+                }
                 chartRow("Battery", snap.batteryTemperatureC.map { Formatting.temperature($0) }, metric: .batteryTemp,
                          color: snap.batteryTemperatureC.map { $0 >= Self.batteryHotC ? .red : ($0 >= Self.batteryWarmC ? .orange : nil) } ?? nil)
                 row("Charger junction", snap.chargerJunctionTemperatureC.map { Formatting.temperature($0) },
@@ -492,7 +503,7 @@ struct ContentView: View {
         let state = monitor.thermalState.name
         monitor.sampler?.exclusive { sensors, _, _ in
             var text = sensors.probeAmbientLight()
-            let pressure = SensorRateProbe.thermalPressureLevel()
+            let pressure = ThermalPressure.current()
             text += "\n\nThermal state (ProcessInfo): \(state)"
             text += "\nThermal pressure level (com.apple.system.thermalpressurelevel): " + (pressure.map(String.init) ?? "unreadable")
             DispatchQueue.main.async { lightReport = text }

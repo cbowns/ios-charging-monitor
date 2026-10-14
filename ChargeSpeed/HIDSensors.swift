@@ -125,35 +125,43 @@ final class HIDSensors {
         }
     }
 
-    /// Lists the vendor-page HID services and anything that looks like a light sensor, and dumps
-    /// every field of their ambient-light events, to find which (if any) carries lux. Changes the
-    /// client's matching, so it rescans afterwards. Call only from the sampler queue.
+    /// Looks for a readable ambient light sensor and dumps every field of its light events, to
+    /// find which (if any) carries lux. Matching on an empty dictionary returns no services on
+    /// iOS, so each candidate usage page/usage is asked for explicitly. Changes the client's
+    /// matching, so it rescans afterwards. Call only from the sampler queue.
     func probeAmbientLight() -> String {
         defer { rescan() }
-        var lines: [String] = []
-        setMatching(client, [:] as CFDictionary)
-        let all = copyServices(client)?.takeRetainedValue() as? [CFTypeRef] ?? []
         func prop(_ ref: CFTypeRef, _ key: String) -> Any? { copyProperty(ref, key as CFString)?.takeRetainedValue() }
-        lines.append("HID services visible: \(all.count)")
-        var candidates: [CFTypeRef] = []
-        var pages: [String: Int] = [:]
-        for ref in all {
-            let page = (prop(ref, "PrimaryUsagePage") as? NSNumber)?.intValue ?? -1
-            let usage = (prop(ref, "PrimaryUsage") as? NSNumber)?.intValue ?? -1
-            let name = prop(ref, "Product") as? String ?? "?"
-            pages[String(format: "0x%x/%d", page, usage), default: 0] += 1
-            let lower = name.lowercased()
-            if (page == 0xff00 && usage == 4) || lower.contains("als") || lower.contains("light") || lower.contains("lux") {
-                candidates.append(ref)
-                lines.append(String(format: "  candidate: %@ (page 0x%x usage %d)", name, page, usage))
+        func services(_ matching: [String: Any]) -> [CFTypeRef] {
+            setMatching(client, matching as CFDictionary)
+            return copyServices(client)?.takeRetainedValue() as? [CFTypeRef] ?? []
+        }
+
+        var lines = ["Services per usage page/usage (names, up to 4):"]
+        var candidates: [(label: String, ref: CFTypeRef)] = []
+        // Apple vendor page 0xff00 (temps are usage 5, ambient light is usage 4), the power page
+        // 0xff08, and the standard HID sensor page 0x20 (0x41 = ambient light sensor).
+        var matchings: [(String, [String: Any])] = (1...16).map { ("0xff00/\($0)", ["PrimaryUsagePage": 0xff00, "PrimaryUsage": $0]) }
+        matchings += [("0xff08/*", ["PrimaryUsagePage": 0xff08]),
+                      ("0x20/*", ["PrimaryUsagePage": 0x20]),
+                      ("0x20/0x41", ["PrimaryUsagePage": 0x20, "PrimaryUsage": 0x41])]
+        for (label, matching) in matchings {
+            let found = services(matching)
+            guard !found.isEmpty else { continue }
+            let names = found.map { prop($0, "Product") as? String ?? "?" }
+            lines.append("  \(label): \(found.count) · " + names.prefix(4).joined(separator: ", ") + (names.count > 4 ? ", …" : ""))
+            if label == "0xff00/4" || label.hasPrefix("0x20") {
+                candidates += zip(names, found).map { ("\(label) \($0)", $1) }
+            } else {
+                candidates += zip(names, found).filter { $0.0.lowercased().contains("als") || $0.0.lowercased().contains("light") }
+                    .map { ("\(label) \($0)", $1) }
             }
         }
-        lines.append("Usage page/usage counts: " + pages.keys.sorted().map { "\($0)×\(pages[$0]!)" }.joined(separator: ", "))
         lines.append("")
-        for ref in candidates {
-            let name = prop(ref, "Product") as? String ?? "?"
+        if candidates.isEmpty { lines.append("No light-sensor services visible to this app.") }
+        for (label, ref) in candidates {
             guard let event = copyEvent(ref, Self.ambientLightEventType, 0, 0)?.takeRetainedValue() else {
-                lines.append("\(name): no ambient-light event (refused or not an ALS)")
+                lines.append("\(label): no ambient-light event (refused or not an ALS)")
                 continue
             }
             let base = Int32(Self.ambientLightEventType << 16)
@@ -162,9 +170,8 @@ final class HIDSensors {
                 let n = getInteger?(event, base + Int32(i))
                 return "\(i)=" + (f.isFinite ? String(format: "%.4g", f) : "nan") + (n.map { "/\($0)" } ?? "")
             }
-            lines.append("\(name) ambient-light fields (float/int): " + fields.joined(separator: " "))
+            lines.append("\(label) light fields (float/int): " + fields.joined(separator: " "))
         }
-        if candidates.isEmpty { lines.append("No light-sensor services visible to this app.") }
         return lines.joined(separator: "\n")
     }
 

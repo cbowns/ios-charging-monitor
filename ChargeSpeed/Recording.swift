@@ -7,7 +7,7 @@ import UIKit
 ///     header   version, start, device, os, app
 ///     sensors  names, usages: the HID sensor catalog; written at start and whenever it changes
 ///     dict     key (raw | powerSource | adapterDetails | chargeStatus), value: written when it changes
-///     tick     t, v (sensor values in catalog order, null = NaN), th, br, dark, app,
+///     tick     t, v (sensor values in catalog order, null = NaN), th, tp, br, dark, app,
 ///              rng ([id, min, max, samples] for fast-sampled sensors, whose v is the window mean)
 ///     event    t, kind, detail
 ///
@@ -127,6 +127,7 @@ final class RecordingWriter: @unchecked Sendable {
             r.spread.map { "[\(r.id),\(RecordingFormat.number($0.min)),\(RecordingFormat.number($0.max)),\($0.count)]" }
         }
         if !spreads.isEmpty { line += ",\"rng\":[\(spreads.joined(separator: ","))]" }
+        if let p = ambient.thermalPressure { line += ",\"tp\":\(p)" }
         if let b = ambient.brightness { line += ",\"br\":\(RecordingFormat.number(b))" }
         if let d = ambient.isDark { line += ",\"dark\":\(d)" }
         if let a = ambient.appState { line += ",\"app\":\(a)" }
@@ -149,7 +150,8 @@ final class RecordingWriter: @unchecked Sendable {
         let info = Bundle.main.infoDictionary ?? [:]
         writeJSON(["type": "header", "version": RecordingFormat.version, "start": date.timeIntervalSince1970,
                    "device": RecordingFormat.modelIdentifier(), "os": Self.osVersion(),
-                   "app": "\(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))"])
+                   "app": "\(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))",
+                   "commit": BuildInfo.commit])
     }
 
     /// e.g. "27.0"; `UIDevice` is main-actor only and this runs on the writer queue.
@@ -232,7 +234,8 @@ struct Recording {
                 let ambient = Ambient(thermalState: obj["th"] as? Int ?? 0,
                                       brightness: obj["br"] as? Double,
                                       isDark: obj["dark"] as? Bool,
-                                      appState: obj["app"] as? Int)
+                                      appState: obj["app"] as? Int,
+                                      thermalPressure: obj["tp"] as? Int)
                 let spreads = (obj["rng"] as? [[Double]] ?? []).compactMap { e -> (Int, HIDSensors.Reading.Spread)? in
                     e.count == 4 ? (Int(e[0]), .init(min: e[1], max: e[2], count: Int(e[3]))) : nil
                 }

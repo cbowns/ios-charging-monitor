@@ -12,6 +12,7 @@ Personal dev-only iPhone app: live charge power in watts from private APIs. Not 
 - Deploy: `/deploy-to-iphone`. Console-attached launch (phone unlocked):
   `xcrun devicectl device process launch --console --terminate-existing --device <UDID> com.gregwilson.chargespeed`
 - Simulator runs but IOKit calls hit the Mac, so it shows the Mac's battery.
+- Build identity: a post-build script in `project.yml` stamps `GitCommit` (short hash, "-dirty" if uncommitted) and `BuildDate` into the built Info.plist; `BuildInfo.swift` shows them in the main list's footer, Copy raw, and recording headers. `MARKETING_VERSION` is still 0.1.0, so the commit is what identifies a build.
 - Release IPA: `.github/workflows/release.yml` builds an unsigned IPA on any `v*` tag and attaches it to a
   GitHub release. To ship: bump `MARKETING_VERSION` in `project.yml`, `git tag vX.Y.Z && git push origin vX.Y.Z`.
   Keep it unsigned; a signed IPA embeds the team, certificate, and registered device UDIDs.
@@ -31,6 +32,8 @@ Personal dev-only iPhone app: live charge power in watts from private APIs. Not 
 - `Replay.swift`: recordings list, `ReplayController` (play, speed, scrub; seeking backwards rebuilds the monitor), replay reuses `ContentView`.
 - Adapter details on iOS (`IOPSCopyExternalPowerAdapterDetails`): Description ("pd charger", "usb charger", "usb type-c", "magsafe chg"), FamilyCode, AdapterVoltage, Current, Watts, AdapterPowerTier, UsbHvcMenu/UsbHvcHvcIndex (PD only), Source/ErrorFlags (wireless). No manufacturer, model or real serial; `SerialString` appears only sometimes, as "UNKNOWN". `UsbHvcHvcIndex` lags (stuck at 0 = 5 V while AdapterVoltage and the measured input said 9 V), so the contract is AdapterVoltage × Current. Plug-in reports "usb charger" 5 V × 1.5 A for ~1 s before the real adapter; unplug reports a 0 W / 0 A placeholder for one tick. Some chargers re-advertise a different PD menu mid-session, with a ~5–10 s drop to 5 V / ~0 A each time.
 - `MetricChart.swift`: tappable rows (into-battery watts, battery voltage, battery temp, SoC hottest die) open a fixed, non-scrolling chart of the last 2/5/15 min from `PowerMonitor.series` (15 min kept; min/max band from `spread`; event rules; minimum y span per metric). A scrollable version was choppy: it rebuilt every mark on each scroll frame.
+- `ThermalPressure.swift`: notify state `com.apple.system.thermalpressurelevel` is readable on iOS 27 (0 nominal … 4 sleeping, finer than `ProcessInfo.thermalState`); recorded per tick as `tp`, shown under Thermals, changes logged as thermal events.
+- HID matching on an empty dictionary returns 0 services on iOS; always match a specific PrimaryUsagePage (and usage). Ambient light (0xff00/4, event type 12) is discovered but unverified; "Probe light sensor & thermal pressure" in Raw data checks it.
 - `SmartCharge.m`: PowerUI client, blocked on iOS, kept for macOS/entitled builds. `Probes*.swift/.m`: DEBUG exploration only, not called.
 
 ## Verified blocked on iOS 26 and 27 (don't retry)
