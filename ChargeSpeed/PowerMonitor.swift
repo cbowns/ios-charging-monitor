@@ -192,6 +192,11 @@ final class PowerMonitor: ObservableObject {
         sampler?.stop()
     }
 
+    /// Slows sensor sampling while the app runs in the background; polling stays at 1 Hz.
+    func setBackground(_ background: Bool) {
+        sampler?.setBackground(background)
+    }
+
     private struct Gathered {
         let snapshot: PowerSnapshot
         let catalog: [HIDSensors.ServiceInfo]

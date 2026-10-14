@@ -99,10 +99,11 @@ struct ContentView: View {
             // polling; the background suspends the app unless the keepalive holds it.
             switch phase {
             case .active:
+                monitor.setBackground(false)
                 monitor.start()
                 keepalive?.start()
             case .background:
-                if keepalive?.isRunning != true { monitor.stop() }
+                if keepalive?.isRunning == true { monitor.setBackground(true) } else { monitor.stop() }
             default: break
             }
         }
