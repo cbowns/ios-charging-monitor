@@ -13,6 +13,15 @@ targets:
     platform: iOS
     sources:
       - ChargeSpeed
+    # Merged with the generated Info.plist. Continuous location keeps the app running in the
+    # background and while locked, so recordings cover whole charging sessions.
+    info:
+      path: ChargeSpeed/Info.plist
+      properties:
+        UIBackgroundModes: [location]
+        # XcodeGen would otherwise hardcode 1.0 / 1 here.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     # DEVELOPMENT_TEAM lives here so a gitignored Local.xcconfig can override it.
     configFiles:
       Debug: Signing.xcconfig
@@ -44,6 +53,8 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: ChargeSpeed
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: ChargeSpeed uses location only to keep running in the background so it can record whole charging sessions. Locations are not stored.
+        INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: ChargeSpeed uses location only to keep running in the background so it can record whole charging sessions. Locations are not stored.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: ChargeSpeed/ChargeSpeed-Bridging-Header.h
         # The build-info stamp reads .git and writes the built Info.plist.
