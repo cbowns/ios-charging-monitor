@@ -253,9 +253,6 @@ final class PowerMonitor: ObservableObject {
         let ambient = currentAmbient()
         recorder?.record(snap, catalog: gathered.catalog, ambient: ambient)
         ingest(snap, ambient)
-        #if DEBUG
-        BackgroundProbe.log(snap, recording: recorder?.url)
-        #endif
 
         let notifyState = SmartChargeNotificationState()
         if notifyState != smartChargeNotifyState {
