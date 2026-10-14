@@ -30,6 +30,7 @@ struct ContentView: View {
                 }
                 if let snap = monitor.snapshot {
                     heroSection(snap)
+                    if let keepalive { BackgroundRecordingSection(keepalive: keepalive) }
                     eventsSection()
                     smartChargeSection()
                     chargingSection(snap)
