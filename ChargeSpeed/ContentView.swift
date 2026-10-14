@@ -381,7 +381,8 @@ struct ContentView: View {
             Section("Display") {
                 row("Brightness", ambient?.brightness.map { String(format: "%.0f%%", $0 * 100) })
                 row("Appearance", ambient?.isDark.map { $0 ? "Dark" : "Light" })
-                row("Ambient light", snap.ambientLux.map { $0.formatted(.number.precision(.fractionLength(0))) + " lux" })
+                chartRow("Ambient light", snap.ambientLux.map { $0.formatted(.number.precision(.fractionLength(0))) + " lux" },
+                         metric: .ambientLux)
                 row("Light colour", snap.ambientColorTemperatureK.map { String(format: "%.0f K", $0) })
             }
         }

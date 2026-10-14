@@ -3,7 +3,7 @@ import Charts
 
 /// A value the Charging and Thermals rows can chart over time.
 enum ChartMetric: String, Identifiable, CaseIterable {
-    case batteryWatts, batteryVoltage, batteryTemp, socTemp
+    case batteryWatts, batteryVoltage, batteryTemp, socTemp, ambientLux
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         case .batteryVoltage: return "Battery voltage"
         case .batteryTemp: return "Battery temperature"
         case .socTemp: return "SoC (hottest die)"
+        case .ambientLux: return "Ambient light"
         }
     }
 
@@ -21,6 +22,7 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         case .batteryWatts: return "W"
         case .batteryVoltage: return "V"
         case .batteryTemp, .socTemp: return "°C"
+        case .ambientLux: return "lux"
         }
     }
 
@@ -29,11 +31,15 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         case .batteryWatts: return "%.2f W"
         case .batteryVoltage: return "%.3f V"
         case .batteryTemp, .socTemp: return "%.1f °C"
+        case .ambientLux: return "%.0f lux"
         }
     }
 
     /// Watts chart from zero so charge and drain read at a glance; the rest zoom to their range.
     var includesZero: Bool { self == .batteryWatts }
+
+    /// Lux spans 1 (dark) to ~100,000 (direct sun), so it's plotted on a log scale.
+    var logScale: Bool { self == .ambientLux }
 
     /// The smallest y range to show, so sensor noise (0.04 °C, a few mV) doesn't fill the chart.
     var minimumYSpan: Double {
@@ -41,6 +47,7 @@ enum ChartMetric: String, Identifiable, CaseIterable {
         case .batteryWatts: return 1
         case .batteryVoltage: return 0.05
         case .batteryTemp, .socTemp: return 2
+        case .ambientLux: return 0
         }
     }
 
@@ -63,6 +70,9 @@ enum ChartMetric: String, Identifiable, CaseIterable {
             return snap.batteryTemperatureC.map { .init(date: snap.date, value: $0, low: $0, high: $0) }
         case .socTemp:
             return snap.socMaxTemperatureC.map { .init(date: snap.date, value: $0, low: $0, high: $0) }
+        case .ambientLux:
+            // Log scale can't show 0; darkness reads as 1 lux.
+            return snap.ambientLux.map { max($0, 1) }.map { .init(date: snap.date, value: $0, low: $0, high: $0) }
         }
     }
 }
@@ -206,7 +216,7 @@ private struct MetricChartPlot: View {
             }
         }
         .chartXScale(domain: start...end)
-        .chartYScale(domain: yDomain)
+        .chartYScale(domain: yDomain, type: metric.logScale ? .log : .linear)
         .chartXSelection(value: $selected)
         .chartXAxis {
             AxisMarks(values: Self.ticks(from: start, to: end)) { value in
@@ -223,6 +233,12 @@ private struct MetricChartPlot: View {
 
     /// The data's range (plus zero for watts), widened to `minimumYSpan` around its middle.
     private var yDomain: ClosedRange<Double> {
+        if metric.logScale {
+            // At least 1–1,000 so a dim room doesn't fill the chart; then whole decades around the data.
+            let lo = max(1, points.map(\.low).min() ?? 1)
+            let hi = max(1000, points.map(\.high).max() ?? 1000)
+            return pow(10, floor(log10(lo)))...pow(10, ceil(log10(hi)))
+        }
         var lo = points.map(\.low).min() ?? 0
         var hi = points.map(\.high).max() ?? 0
         if metric.includesZero { lo = min(lo, 0); hi = max(hi, 0) }
