@@ -4,6 +4,12 @@ import UIKit
 
 @MainActor
 final class PowerMonitor: ObservableObject {
+    /// Sent once per tick and on user actions instead of on every `@Published` change (a
+    /// custom publisher turns the automatic sends off), and not at all in the background:
+    /// re-rendering the hidden UI every second was most of the background CPU.
+    nonisolated let objectWillChange = PassthroughSubject<Void, Never>()
+    private var isBackground = false
+
     @Published private(set) var snapshot: PowerSnapshot?
     @Published private(set) var errorMessage: String?
     /// Last ~2 minutes of the headline watts, one sample per refresh.
@@ -170,6 +176,11 @@ final class PowerMonitor: ObservableObject {
         peak = nil
         recentSamples.removeAll()
         save(peak, forKey: Self.peakKey)
+        publish()
+    }
+
+    private func publish() {
+        if !isBackground { objectWillChange.send() }
     }
 
     func start() {
@@ -192,9 +203,12 @@ final class PowerMonitor: ObservableObject {
         sampler?.stop()
     }
 
-    /// Slows sensor sampling while the app runs in the background; polling stays at 1 Hz.
+    /// Slows sensor sampling and stops UI updates while the app runs in the background;
+    /// polling and recording stay at 1 Hz.
     func setBackground(_ background: Bool) {
         sampler?.setBackground(background)
+        isBackground = background
+        publish()
     }
 
     private struct Gathered {
@@ -219,6 +233,7 @@ final class PowerMonitor: ObservableObject {
     }
 
     func refresh() async {
+        defer { publish() }
         guard let reader else {
             errorMessage = "IOKit could not be loaded on this device."
             return
@@ -262,6 +277,7 @@ final class PowerMonitor: ObservableObject {
 
     /// Everything derived from one tick, shared by live polling and replay.
     func ingest(_ snap: PowerSnapshot, _ ambient: Ambient) {
+        defer { publish() }
         snapshot = snap
         if ambient != self.ambient { self.ambient = ambient }
         if ambient.thermal != thermalState { thermalState = ambient.thermal }
@@ -315,6 +331,7 @@ final class PowerMonitor: ObservableObject {
                 status.available = false
                 status.errorMessage = "PowerUI framework unavailable"
                 smartCharge = status
+                publish()
             }
             return
         }
@@ -325,6 +342,7 @@ final class PowerMonitor: ObservableObject {
                 guard let self else { return }
                 self.smartCharge = status
                 self.smartChargeInFlight = false
+                self.publish()
                 #if DEBUG
                 if self.refreshCount <= 1 {
                     print("SMARTCHARGE available=\(status.available) obc=\(status.obcEnabled) mcl=\(status.mclEnabled) limit=\(status.mclLimit) deoc=\(status.deocEnabled) current=\(status.currentChargeLimit) recommended=\(status.recommendedChargeLimit) engaged=\(status.obcEngaged) engagedLimit=\(status.engagedChargeLimit) override=\(status.chargingOverrideAllowed) ui=\(status.uiState) supported=\(status.obcSupported)/\(status.mclSupported)/\(status.deocSupported) deadline=\(String(describing: status.fullChargeDeadline)) errors=\(status.callErrors)")
