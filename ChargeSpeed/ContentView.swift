@@ -36,7 +36,7 @@ struct ContentView: View {
                     chargingSection(snap)
                     adapterSection(snap)
                     thermalSection(snap)
-                    displaySection()
+                    displaySection(snap)
                     telemetrySection(snap)
                     chargerSection(snap)
                     rawSection(snap)
@@ -375,11 +375,14 @@ struct ContentView: View {
     // MARK: Display
 
     @ViewBuilder
-    private func displaySection() -> some View {
-        if let ambient = monitor.ambient, ambient.brightness != nil || ambient.isDark != nil {
+    private func displaySection(_ snap: PowerSnapshot) -> some View {
+        let ambient = monitor.ambient
+        if ambient?.brightness != nil || ambient?.isDark != nil || snap.ambientLux != nil {
             Section("Display") {
-                row("Brightness", ambient.brightness.map { String(format: "%.0f%%", $0 * 100) })
-                row("Appearance", ambient.isDark.map { $0 ? "Dark" : "Light" })
+                row("Brightness", ambient?.brightness.map { String(format: "%.0f%%", $0 * 100) })
+                row("Appearance", ambient?.isDark.map { $0 ? "Dark" : "Light" })
+                row("Ambient light", snap.ambientLux.map { $0.formatted(.number.precision(.fractionLength(0))) + " lux" })
+                row("Light colour", snap.ambientColorTemperatureK.map { String(format: "%.0f K", $0) })
             }
         }
     }

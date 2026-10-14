@@ -137,6 +137,10 @@ struct PowerSnapshot {
         sensors.filter { $0.usage == 5 && $0.name == "gas gauge battery" }.map(\.value).max()
     }
     var chargerJunctionTemperatureC: Double? { sensor("Charger TQ0j") }
+    /// Ambient light in lux, from the "als" sensor.
+    var ambientLux: Double? { sensors.first { $0.usage == 4 }?.value }
+    /// Colour temperature of the ambient light in kelvin (daylight ≈ 5,500–6,500 K, indoor ≈ 2,700–4,000 K).
+    var ambientColorTemperatureK: Double? { sensors.first { $0.usage == HIDSensors.colorTemperatureUsage }?.value }
     var chargerDieTemperatureC: Double? { sensor("Charger TQ0d") }
     /// Hottest SoC die sensor (`PMU tdie1…n`).
     var socMaxTemperatureC: Double? {
