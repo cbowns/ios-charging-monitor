@@ -67,9 +67,15 @@ extension BackgroundKeepalive: CLLocationManagerDelegate {
         }
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {}
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        MainActor.assumeIsolated {
+            if lastError != nil { lastError = nil }
+        }
+    }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // No fix yet; updates carry on.
+        if (error as? CLError)?.code == .locationUnknown { return }
         let message = error.localizedDescription
         MainActor.assumeIsolated { lastError = message }
     }
