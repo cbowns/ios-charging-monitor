@@ -4,6 +4,8 @@ struct ContentView: View {
     @ObservedObject var monitor: PowerMonitor
     /// Set when showing a recording instead of live data.
     var replay: ReplayController?
+    /// Live only: keeps the app, and so the monitor, running in the background.
+    var keepalive: BackgroundKeepalive?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
     @State private var showRecordings = false
@@ -84,6 +86,7 @@ struct ContentView: View {
             guard monitor.isLive else { return }
             UIApplication.shared.isIdleTimerDisabled = true
             monitor.start()
+            keepalive?.start()
         }
         .onDisappear {
             guard monitor.isLive else { return }
@@ -93,10 +96,13 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             guard monitor.isLive else { return }
             // Inactive (app switcher, Control Center, Notification Center) still runs, so keep
-            // polling; only the background suspends the app.
+            // polling; the background suspends the app unless the keepalive holds it.
             switch phase {
-            case .active: monitor.start()
-            case .background: monitor.stop()
+            case .active:
+                monitor.start()
+                keepalive?.start()
+            case .background:
+                if keepalive?.isRunning != true { monitor.stop() }
             default: break
             }
         }
