@@ -13,6 +13,7 @@ targets:
     platform: iOS
     sources:
       - ChargeSpeed
+      - Shared
     # Merged with the generated Info.plist. Continuous location keeps the app running in the
     # background and while locked, so recordings cover whole charging sessions.
     info:
