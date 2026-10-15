@@ -50,6 +50,9 @@ final class LiveActivityController {
         lastSentAt = now
         let content = ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.staleAfter))
         Task { await activity.update(content) }
+        #if DEBUG
+        print("LIVEACTIVITY update \(state)")
+        #endif
     }
 
     private func start(_ state: State, sessionStart: Date, now: Date) {
