@@ -37,10 +37,12 @@ final class LiveActivityController {
         }
         let state = State(snap)
         let now = Date()
-        guard let activity, activity.activityState == .active || activity.activityState == .stale else {
+        guard let activity else {
             start(state, sessionStart: sessionStart ?? now, now: now)
             return
         }
+        // Swiped away (or ended by the system): stay away until the next plug-in.
+        guard activity.activityState == .active || activity.activityState == .stale else { return }
         guard state != lastSent else { return }
         let urgent = state.status != lastSent?.status || state.percent != lastSent?.percent
         guard urgent || now.timeIntervalSince(lastSentAt) >= Self.minInterval else { return }
