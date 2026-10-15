@@ -1,5 +1,5 @@
 import ActivityKit
-import Foundation
+import UIKit
 
 /// Runs the charging Live Activity: starts it while plugged in, updates it from the monitor's
 /// ticks, ends it at unplug. ActivityKit throttles frequent updates (more so from a background
@@ -56,6 +56,9 @@ final class LiveActivityController {
     }
 
     private func start(_ state: State, sessionStart: Date, now: Date) {
+        // ActivityKit refuses to start one from the background ("visibility"), even while the
+        // keepalive has the app running, so a locked plug-in starts it at the next foreground.
+        guard UIApplication.shared.applicationState == .active else { return }
         guard now.timeIntervalSince(lastStartAttempt) >= Self.startRetryInterval else { return }
         lastStartAttempt = now
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
