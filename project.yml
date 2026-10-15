@@ -14,6 +14,8 @@ targets:
     sources:
       - ChargeSpeed
       - Shared
+    dependencies:
+      - target: ChargeSpeedWidgets
     # Merged with the generated Info.plist. Continuous location keeps the app running in the
     # background and while locked, so recordings cover whole charging sessions.
     info:
@@ -52,6 +54,7 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_CFBundleDisplayName: ChargeSpeed
+        INFOPLIST_KEY_NSSupportsLiveActivities: YES
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: ChargeSpeed uses location only to keep running in the background so it can record whole charging sessions. Locations are not stored.
@@ -60,3 +63,29 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: ChargeSpeed/ChargeSpeed-Bridging-Header.h
         # The build-info stamp reads .git and writes the built Info.plist.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
+  # Lock Screen and Dynamic Island Live Activity for a charging session.
+  ChargeSpeedWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - ChargeSpeedWidgets
+      - Shared
+    info:
+      path: ChargeSpeedWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: ChargeSpeed
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.gregwilson.chargespeed.widgets
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
