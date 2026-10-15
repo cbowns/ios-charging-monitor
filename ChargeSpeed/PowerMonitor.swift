@@ -109,6 +109,7 @@ final class PowerMonitor: ObservableObject {
     let sampler: SensorSampler?
     private let smartChargeReader: SmartChargeReader?
     let recorder: RecordingWriter?
+    private let liveActivity: LiveActivityController?
     private var smartChargeInFlight = false
     private var task: Task<Void, Never>?
     private let interval: Duration = .seconds(1)
@@ -131,6 +132,7 @@ final class PowerMonitor: ObservableObject {
         sampler = Self.sharedSampler
         smartChargeReader = SmartChargeReader()
         recorder = RecordingWriter()
+        liveActivity = LiveActivityController()
         thermalState = ProcessInfo.processInfo.thermalState
         if let data = UserDefaults.standard.data(forKey: Self.holdKey),
            let hold = try? JSONDecoder().decode(HoldObservation.self, from: data) {
@@ -161,6 +163,7 @@ final class PowerMonitor: ObservableObject {
         sampler = nil
         smartChargeReader = nil
         recorder = nil
+        liveActivity = nil
     }
 
     private func save<T: Encodable>(_ value: T?, forKey key: String) {
@@ -253,6 +256,7 @@ final class PowerMonitor: ObservableObject {
         let ambient = currentAmbient()
         recorder?.record(snap, catalog: gathered.catalog, ambient: ambient)
         ingest(snap, ambient)
+        liveActivity?.update(snap, sessionStart: session?.start)
 
         let notifyState = SmartChargeNotificationState()
         if notifyState != smartChargeNotifyState {
